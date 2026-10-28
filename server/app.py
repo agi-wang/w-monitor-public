@@ -26,6 +26,7 @@ from encryption import SealedData
 from i18n import EN, language, render_html, translate
 
 VERSION = "1.0.81"
+SOURCE_RELEASE = Path(__file__).resolve().parents[1].name
 MAX_BODY = 8 * 1024 * 1024
 WEB = Path(__file__).resolve().parent / "web"
 os.umask(0o077)
@@ -477,7 +478,17 @@ def route(db, environ):
     method, path = environ.get("REQUEST_METHOD", "GET"), environ.get("PATH_INFO", "/")
     locale = language(environ.get("HTTP_ACCEPT_LANGUAGE", ""))
     if method == "GET" and path == "/health":
-        return 200, {"status": "ok", "version": VERSION, "mode": "public", "host_control_enabled": False, "agent_updates": "manual", "cache": "redis" if CACHE.healthy() else "unavailable", "realtime": "sse" if CONFIG.get("enable_events") is True else "polling"}, []
+        return 200, {"status": "ok", "version": VERSION, "release_tag": SOURCE_RELEASE if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", SOURCE_RELEASE) else None, "mode": "public", "host_control_enabled": False, "agent_updates": "manual", "cache": "redis" if CACHE.healthy() else "unavailable", "realtime": "sse" if CONFIG.get("enable_events") is True else "polling"}, []
+    if method == "GET" and path == "/api/platform-load":
+        raw = CACHE.command("GET", NAMESPACE + "platform-load")
+        if raw:
+            try:
+                value = BOX.open("platform-load", raw)
+                if time.time() - value["collected_at"] <= 180:
+                    return 200, value, []
+            except (ValueError, TypeError, KeyError):
+                pass
+        return 200, {"available": False}, []
     if method == "POST" and re.fullmatch(r"/ingest/" + LINK, path):
         return 200, receive(db, environ, link_payload("ingest", path.rsplit("/", 1)[1])), []
     if method == "GET" and re.fullmatch(r"/api/public/status/" + LINK, path):
@@ -707,6 +718,7 @@ def route(db, environ):
 
 
 def application(environ, start_response):
+    started = time.perf_counter_ns()
     path = environ.get("PATH_INFO", "/")
     method = environ.get("REQUEST_METHOD", "GET")
     locale = language(environ.get("HTTP_ACCEPT_LANGUAGE", ""))
@@ -753,5 +765,7 @@ def application(environ, start_response):
         # Never log request bodies, bearer tokens, recovery phrases or OAuth data.
         print("W Monitor Public: request rejected by internal validation", file=environ.get("wsgi.errors", __import__("sys").stderr))
         status, payload, extra, content = 500, json.dumps({"error": translate("无法处理此请求", locale)}, ensure_ascii=False).encode(), [], "application/json; charset=utf-8"
+    if (path.startswith("/api/") or path.startswith("/ingest/")) and path != "/api/platform-load":
+        CACHE.record_request(NAMESPACE, status, (time.perf_counter_ns() - started) // 1000)
     start_response(f"{status} {HTTPStatus(status).phrase}", headers + extra + [("Content-Type", content), ("Content-Length", str(len(payload)))])
     return [payload]

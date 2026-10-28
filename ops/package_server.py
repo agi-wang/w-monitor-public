@@ -9,7 +9,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 version = tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]["version"]
 paths = sorted(path for path in (ROOT / "server").rglob("*") if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc")
-allowed = {"app.py", "redis_cache.py", "encryption.py", "i18n.py", "notify.py", "requirements.lock", "passenger_wsgi.py", "config.example.json", "openapi.json", "web/index.html", "web/app.js", "web/style.css"}
+allowed = {"app.py", "redis_cache.py", "encryption.py", "i18n.py", "metrics.py", "notify.py", "requirements.lock", "passenger_wsgi.py", "config.example.json", "openapi.json", "web/index.html", "web/app.js", "web/style.css"}
 if {path.relative_to(ROOT / "server").as_posix() for path in paths} != allowed:
     raise SystemExit("Server source inventory does not match the release allowlist")
 if f'VERSION = "{version}"' not in (ROOT / "server/app.py").read_text():

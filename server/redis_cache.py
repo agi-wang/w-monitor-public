@@ -86,6 +86,16 @@ class RedisCache:
     def healthy(self):
         return self.command("PING") == "PONG"
 
+    def record_request(self, namespace, status, duration_us):
+        script = """
+        redis.call('HINCRBY',KEYS[1],'requests',1)
+        redis.call('HINCRBY',KEYS[1],'duration_us',ARGV[1])
+        if tonumber(ARGV[2])>=500 then redis.call('HINCRBY',KEYS[1],'errors',1) end
+        redis.call('EXPIRE',KEYS[1],180)
+        return 1
+        """
+        return self.command("EVAL", script, 1, namespace + "requests:" + str(int(time.time()) // 60), max(0, int(duration_us)), status)
+
     def store_report(self, key, device, space, raw, meta, epoch):
         # Full snapshots are a short-lived compressed cache, not a resource
         # quota. Offline raw payloads expire; compact last-seen metadata remains.

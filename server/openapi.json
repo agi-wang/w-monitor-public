@@ -1838,6 +1838,36 @@
         },
         "parameters": []
       }
+    },
+    "/api/platform-load": {
+      "get": {
+        "summary": "Read the cached once-per-minute aggregate platform load",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "description": "No tenant identifiers or reports. Missing/stale snapshots return available=false. Request rate, mean processing time and 5xx rate use the previous complete minute. Host load has shared_host scope, not account CPU usage. Numeric metrics are null when no sample exists."
+      }
     }
   }
 }

@@ -289,6 +289,26 @@ for (const id of ["devices-tab", "pages-tab"]) $(id).onkeydown = (event) => {
 };
 document.addEventListener("visibilitychange", () => { if (document.hidden) stopRealtime(); else { if (publicSlug || session?.space) void refresh(); startRealtime(); } });
 window.addEventListener("pagehide", stopRealtime);
+async function refreshPlatformLoad() {
+  try {
+    const data = await api("/api/platform-load");
+    if (!data.available) throw new Error();
+    const format = (value, suffix = "") => typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(value) + suffix : "—";
+    $("load-devices").textContent = `${data.online_devices} / ${data.devices}`;
+    $("load-rps").textContent = format(data.requests_per_second);
+    $("load-latency").textContent = format(data.mean_response_ms, " ms");
+    $("load-errors").textContent = format(data.server_error_percent, "%");
+    $("load-redis").textContent = format(data.redis_used_bytes / 1048576, " MiB");
+    $("load-host").textContent = format(data.host_load?.[0]);
+    $("load-stamp").textContent = t("更新于 {time} · 展示上一完整分钟；系统负载来自共享宿主机，并非本账号 CPU 占用。", { time: timeLabel(data.collected_at) });
+  } catch {
+    for (const id of ["load-devices", "load-rps", "load-latency", "load-errors", "load-redis", "load-host"]) $(id).textContent = "—";
+    $("load-stamp").textContent = t("等待统计。系统负载来自共享宿主机，不代表本账号 CPU 占用。");
+  }
+}
+void refreshPlatformLoad();
+const platformPoll = setInterval(() => { if (!document.hidden) void refreshPlatformLoad(); }, 60000);
+window.addEventListener("pagehide", () => clearInterval(platformPoll));
 void run(async () => {
   if (publicSlug) { $("loading").hidden = true; $("public-page").hidden = false; await refresh(); startRealtime(); }
   else await loadSession();

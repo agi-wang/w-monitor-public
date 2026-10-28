@@ -137,9 +137,14 @@ UI polls every five seconds. Optional bounded SSE invalidation is available with
 `enable_events: true` only after verifying the host's streaming behavior; this is
 not a WebSocket/control channel.
 
+The homepage shows a cached platform-load snapshot refreshed by the account Cron
+once per minute: request rate, mean application response time, 5xx rate, online/total
+devices and Redis memory. System load is explicitly labeled as shared-host load,
+not account CPU usage. The snapshot contains no tenant names, IDs or addresses.
+
 Optional email uses a dedicated SMTP account with STARTTLS and certificate
 validation. Set the `smtp_*` configuration fields. Run `server/notify.py` once per
-minute using the release venv, or install `ops/run_notifications.py` as a stable
+minute using the release venv, or install `ops/run_periodic.py` as a stable
 Cron entrypoint after automatic deployment is configured. It queues only opted-in
 offline/recovery changes, skips unknown Redis state, and bounds retries and volume.
 

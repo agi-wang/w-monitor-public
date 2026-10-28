@@ -28,7 +28,7 @@ os.umask(0o077)
 PRIVATE = Path.home() / ".w-monitor"
 ROOT = Path.home() / "w-monitor-public"
 CONFIG = PRIVATE / "deploy-config.json"
-EXPECTED = {"server/app.py", "server/redis_cache.py", "server/encryption.py", "server/i18n.py", "server/notify.py", "server/requirements.lock", "server/passenger_wsgi.py", "server/config.example.json", "server/openapi.json", "server/web/index.html", "server/web/app.js", "server/web/style.css"}
+EXPECTED = {"server/app.py", "server/redis_cache.py", "server/encryption.py", "server/i18n.py", "server/metrics.py", "server/notify.py", "server/requirements.lock", "server/passenger_wsgi.py", "server/config.example.json", "server/openapi.json", "server/web/index.html", "server/web/app.js", "server/web/style.css"}
 
 
 def atomic(path, data, mode=0o600):
@@ -53,7 +53,7 @@ def healthy(origin, version):
             with build_opener(NoRedirect()).open(request, timeout=5) as response:
                 raw = response.read(65537)
             value = json.loads(raw) if len(raw) <= 65536 else {}
-            if value.get("status") == "ok" and value.get("version") == version and value.get("mode") == "public" and value.get("host_control_enabled") is False and value.get("cache") == "redis":
+            if value.get("status") == "ok" and value.get("version") == version and value.get("release_tag") == "v" + version and value.get("mode") == "public" and value.get("host_control_enabled") is False and value.get("cache") == "redis":
                 return True
         except Exception:
             pass

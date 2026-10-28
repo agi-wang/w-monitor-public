@@ -3,6 +3,17 @@ import html
 import re
 
 EN = {
+    '平台当前负载': 'Platform load',
+    '每分钟更新': 'Updated every minute',
+    '在线 / 接入设备': 'Online / Registered devices',
+    '应用请求 / 秒': 'Application requests / sec',
+    '平均处理耗时': 'Mean processing time',
+    '服务端错误率': 'Server error rate',
+    'Redis 已用内存': 'Redis memory used',
+    '宿主机负载 · 1 分钟': 'Shared host load · 1 min',
+    '等待统计。系统负载来自共享宿主机，不代表本账号 CPU 占用。': 'Waiting for metrics. System load is shared-host data, not account CPU usage.',
+    '更新于 {time} · 展示上一完整分钟；系统负载来自共享宿主机，并非本账号 CPU 占用。': 'Updated {time} · Previous complete minute; system load is shared-host data, not account CPU usage.',
+
     '无效部署设置': 'Invalid deployment settings',
     '一键部署单台设备': 'One-command device setup',
     '一键部署单台设备 ': 'One-command device setup ',

@@ -93,3 +93,15 @@ and queued recipients are encrypted. The optional Cron worker sends bounded
 offline/recovery changes using validated STARTTLS; missing telemetry is skipped.
 Email is not a login or recovery-key delivery channel. Users can disable delivery
 or unbind the email, cancelling pending messages.
+
+## Platform load
+
+Public `GET /api/platform-load` reads a cached aggregate snapshot, refreshed once
+per minute by `server/metrics.py` from account Cron. It returns `available: false`
+when the snapshot is missing or older than three minutes. Numeric fields describe
+registered/online/unknown device counts, previous complete minute request rate,
+mean application processing time, 5xx rate, dedicated Redis memory, collection
+time and shared-host load averages. Missing request samples remain null. No tenant
+identifiers, names, contact details, addresses, credentials or raw reports appear.
+Host load is explicitly shared-host scope, not account CPU usage. Request counters
+use three-minute Redis buckets and never write SQLite.
