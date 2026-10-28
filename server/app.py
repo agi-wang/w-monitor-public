@@ -346,19 +346,29 @@ def receive(db, environ):
     auth = environ.get("HTTP_AUTHORIZATION", "")
     if not auth.startswith("Bearer ") or len(auth) > 256:
         raise Rejected(401, "需要设备上报凭据")
-    credential = digest(auth[7:])
+    token = auth[7:]
+    if not re.fullmatch(r"(?:sat_[a-f0-9]{32}|wmb_[a-f0-9]{64})", token):
+        raise Rejected(401, "上报凭据无效或已吊销")
+    credential = digest(token)
+    # Prefixes choose the index, never grant access. Exact hashed credentials
+    # remain authoritative; reject before decompressing untrusted reports.
+    machine = db.execute("SELECT id,space_id,agent_id,token_hash FROM devices WHERE token_hash=?", (credential,)).fetchone() if token.startswith("sat_") else None
+    space = db.execute("SELECT id,auto_page FROM spaces WHERE bootstrap_hash=?", (credential,)).fetchone() if token.startswith("wmb_") else None
+    if machine is None and space is None:
+        raise Rejected(401, "上报凭据无效或已吊销")
     report = body(environ, MAX_BODY)
     agent = report.get("agent_id", "")
     if not isinstance(agent, str) or not 1 <= len(agent.encode()) <= 255 or agent != agent.strip() or any(ord(c) < 32 or ord(c) == 127 for c in agent):
         raise Rejected(400, "无效设备标识")
     if report.get("version") != "1.0" or not isinstance(report.get("collectors"), dict) or ("compact" in report and not isinstance(report["compact"], dict)):
         raise Rejected(400, "需要 v1.0 完整采集快照")
-    machine = db.execute("SELECT * FROM devices WHERE token_hash=?", (credential,)).fetchone()
     # Registration serializes durable ownership/token writes. Steady-state
     # telemetry never takes the SQLite writer lock or rewrites the device row.
     if not machine:
         db.execute("BEGIN IMMEDIATE")
-    space = db.execute("SELECT * FROM spaces WHERE bootstrap_hash=?", (credential,)).fetchone() if not machine else None
+        # Recheck inside the registration transaction so a concurrent key
+        # rotation cannot authorize a device using a revoked bootstrap key.
+        space = db.execute("SELECT id,auto_page FROM spaces WHERE bootstrap_hash=?", (credential,)).fetchone()
     if machine and machine["agent_id"] != agent:
         raise Rejected(403, "设备凭据只允许上报它自身")
     if not machine and not space:

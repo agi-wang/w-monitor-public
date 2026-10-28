@@ -106,3 +106,9 @@ time and shared-host load averages. Missing request samples remain null. No tena
 identifiers, names, contact details, addresses, credentials or raw reports appear.
 Host load is explicitly shared-host scope, not account CPU usage. Request counters
 use three-minute Redis buckets and never write SQLite.
+
+Credential matching uses an exact SHA-256 lookup in a SQLite UNIQUE index. Token
+prefixes select either the bootstrap-key index or device-token index; they do not
+authorize requests. Established devices need one indexed lookup and no SQLite
+write. Invalid credentials are rejected before report decompression. Bootstrap
+registration rechecks the key inside its write transaction to serialize revocation.
