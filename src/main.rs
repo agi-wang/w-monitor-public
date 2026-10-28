@@ -691,6 +691,7 @@ async fn main() -> Result<()> {
         report.metadata.agent_version = env!("CARGO_PKG_VERSION").to_owned();
         report.apply_runtime_access(true);
         report.metadata.capabilities["agent.lite"] = json!(true);
+        report.metadata.capabilities["telemetry.metrics"] = json!(true);
         report.metadata.capabilities["security.inventory"] = json!("osv-v1");
         report.metadata.capabilities["security.advisories"] = json!("dpkg-v1");
         let bytes = if full {

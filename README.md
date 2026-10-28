@@ -230,3 +230,7 @@ through the authenticated panel terminal. Both transports verify active health
 and website binary hashes. Provision the private gate/config and account Cron
 once before enabling tag deployment. Ordinary hosting accounts share their Unix
 identity with other vhosts; independent data directories are not OS isolation.
+
+`offline_grace_ms` is also editable at startup (default 15000). Online status,
+platform counts and notifications share one deadline calculation using each
+device's negotiated reporting cadence, including legacy Agents.

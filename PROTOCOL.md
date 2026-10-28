@@ -144,3 +144,9 @@ explicitly pass that website's origin; an unconfigured Agent launched without
 parameters uses terminal prompts to select a region and either enter a key or
 create a new anonymous space. Creation prints recovery/management/public links.
 Only non-recovery links may be saved with the device configuration.
+
+Online state, aggregate counts and notifications use the same per-device expected
+interval. Supporting Agents advertise `metadata.capabilities["telemetry.metrics"]`
+and fast samples use the configured metrics interval; legacy devices retain their
+full-report deadline. Runtime `offline_grace_ms` (default 15000) prevents short
+collection/network gaps from producing false outage transitions.

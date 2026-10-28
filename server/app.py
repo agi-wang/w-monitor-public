@@ -82,6 +82,7 @@ def cadence(name, default, minimum, maximum):
 METRICS_INTERVAL = cadence("metrics_interval_ms", 3000, 1000, 60000)
 PAGE_REFRESH = cadence("page_refresh_ms", 1500, 500, 60000)
 SNAPSHOT_CACHE = cadence("snapshot_cache_ms", 500, 100, 5000)
+OFFLINE_GRACE = cadence("offline_grace_ms", 15000, 5000, 300000)
 BOX = SealedData(CONFIG["instance_secret"])
 DATABASE = DATA / "monitor.sqlite3"
 CACHE = RedisCache(CONFIG.get("redis_socket", ""))
@@ -302,9 +303,16 @@ def network_rate(value):
     return round(value, 2) if type(value) in (int, float) and 0 <= value <= 1e15 and math.isfinite(value) else None
 
 
+def offline_after(meta):
+    expected = meta.get("expected_interval_ms", INTERVAL)
+    if type(expected) is not int or not 1000 <= expected <= 1800000:
+        expected = INTERVAL
+    return max(OFFLINE_GRACE / 1000, expected / 1000 * 2.1)
+
+
 def projection(row, meta=None, public=False, available=True):
     received = meta.get("received_at") if isinstance(meta, dict) else None
-    online = received >= time.time() - max(60, INTERVAL / 1000 * 2.1) if type(received) is int else None
+    online = received >= time.time() - offline_after(meta) if type(received) is int else None
     result = {"name": meta.get("name", row["name"]) if isinstance(meta, dict) else row["name"], "online": online, "last_seen": received, "data_status": "available" if received else "awaiting_report" if available else "unavailable", "cpu_percent": meta.get("cpu") if online else None, "memory_percent": meta.get("memory") if online else None, "disk_percent": meta.get("disk") if online else None, "network_rx_bps": meta.get("network_rx_bps") if online else None, "network_tx_bps": meta.get("network_tx_bps") if online else None}
     if not public:
         result["id"] = row["id"]
@@ -419,8 +427,11 @@ def receive(db, environ):
             # Later registrations never add devices to this page automatically.
             db.execute("UPDATE pages SET selection=? WHERE id=? AND space_id=? AND enabled=1", (json.dumps([device_id]), space["auto_page"], space_id))
             db.execute("UPDATE spaces SET auto_page=NULL WHERE id=?", (space_id,))
+    report_metadata = report.get("metadata", {})
+    capabilities = report_metadata.get("capabilities", {}) if isinstance(report_metadata, dict) else {}
+    supports_metrics = metrics or (isinstance(capabilities, dict) and capabilities.get("telemetry.metrics") is True)
     network = scalar(collectors, "network")
-    metadata = {"name": name, "received_at": int(time.time()), "cpu": percent(cpu.get("usage_percent", cpu.get("usage"))), "memory": percent(memory.get("usage_percent")), "disk": percent(disk.get("usage_percent")), "network_rx_bps": network_rate(network.get("total_received_bytes_per_sec")), "network_tx_bps": network_rate(network.get("total_transmitted_bytes_per_sec"))}
+    metadata = {"name": name, "received_at": int(time.time()), "expected_interval_ms": METRICS_INTERVAL if supports_metrics else interval, "cpu": percent(cpu.get("usage_percent", cpu.get("usage"))), "memory": percent(memory.get("usage_percent")), "disk": percent(disk.get("usage_percent")), "network_rx_bps": network_rate(network.get("total_received_bytes_per_sec")), "network_tx_bps": network_rate(network.get("total_transmitted_bytes_per_sec"))}
     stored = CACHE.store_metrics(DYNAMIC, device_id, space_id, BOX.seal("metrics:" + device_id, metadata), secrets.token_hex(16)) if metrics else CACHE.store_report(DYNAMIC, device_id, space_id, BOX.seal_report("report:" + device_id, report), BOX.seal("metrics:" + device_id, metadata), secrets.token_hex(16))
     if stored != 1:
         raise Rejected(503, "实时数据存储暂不可用；本次上报未确认")

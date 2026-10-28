@@ -16,5 +16,6 @@
   "smtp_from": "",
   "metrics_interval_ms": 3000,
   "page_refresh_ms": 1500,
-  "snapshot_cache_ms": 500
+  "snapshot_cache_ms": 500,
+  "offline_grace_ms": 15000
 }
