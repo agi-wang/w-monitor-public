@@ -1,8 +1,10 @@
 """Read-only monitoring receiver for Python WSGI hosting."""
 import base64
+import gzip
 from contextlib import contextmanager
 import hashlib
 import hmac
+import io
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 import json
@@ -14,6 +16,7 @@ import secrets
 import sqlite3
 import stat
 import time
+import zlib
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -24,7 +27,6 @@ from i18n import EN, language, render_html, translate
 
 VERSION = "1.0.81"
 MAX_BODY = 8 * 1024 * 1024
-MAX_DYNAMIC_BYTES = 64 * 1024 * 1024
 WEB = Path(__file__).resolve().parent / "web"
 os.umask(0o077)
 
@@ -86,7 +88,6 @@ def database():
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys=ON")
     connection.execute("PRAGMA busy_timeout=1000")
-    connection.execute("PRAGMA max_page_count=65536")
     connection.execute("PRAGMA journal_size_limit=8388608")
     connection.execute("PRAGMA wal_autocheckpoint=128")
     try:
@@ -99,7 +100,6 @@ def database():
 
 with database() as _db:
     _db.execute("PRAGMA journal_mode=WAL")
-    _db.execute("PRAGMA max_page_count=65536")
     _db.execute("PRAGMA journal_size_limit=8388608")
     _db.executescript("""
     CREATE TABLE IF NOT EXISTS spaces(
@@ -163,20 +163,27 @@ def limited(identity, limit, seconds):
         raise Rejected(429, "操作过于频繁，请稍后再试")
 
 
-def body(environ, maximum=65536):
+def body(environ, maximum=256 * 1024):
     try:
         length = int(environ.get("CONTENT_LENGTH") or "0")
     except ValueError:
         raise Rejected(400, "无效请求长度") from None
     if length < 0 or length > maximum:
         raise Rejected(413, "请求超过大小限制")
-    if environ.get("CONTENT_TYPE", "").split(";", 1)[0].lower() != "application/json" or environ.get("HTTP_CONTENT_ENCODING", "identity") != "identity":
-        raise Rejected(415, "请发送未压缩的 JSON")
+    encoding = environ.get("HTTP_CONTENT_ENCODING", "identity")
+    if environ.get("CONTENT_TYPE", "").split(";", 1)[0].lower() != "application/json" or encoding not in ("identity", "gzip") or (encoding == "gzip" and maximum != MAX_BODY):
+        raise Rejected(415, "请发送 JSON（上报支持 gzip 压缩）")
     try:
         def invalid_constant(_value):
             raise ValueError()
-        value = json.loads(environ["wsgi.input"].read(length), parse_constant=invalid_constant)
-    except (ValueError, UnicodeError, RecursionError):
+        raw = environ["wsgi.input"].read(length)
+        if encoding == "gzip":
+            with gzip.GzipFile(fileobj=io.BytesIO(raw)) as stream:
+                raw = stream.read(maximum + 1)
+            if len(raw) > maximum:
+                raise Rejected(413, "请求超过大小限制")
+        value = json.loads(raw, parse_constant=invalid_constant)
+    except (ValueError, UnicodeError, RecursionError, gzip.BadGzipFile, EOFError, zlib.error):
         raise Rejected(400, "无效 JSON") from None
     if not isinstance(value, dict):
         raise Rejected(400, "JSON 必须是对象")
@@ -205,8 +212,6 @@ def browser_session(db, environ, create=False):
     limited("session:" + environ.get("REMOTE_ADDR", ""), 60, 3600)
     now = int(time.time())
     db.execute("DELETE FROM sessions WHERE hash IN (SELECT hash FROM sessions WHERE expires<? LIMIT 128)", (now,))
-    if db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] >= 10000:
-        raise Rejected(503, "会话额度暂时不足")
     token = secret("wms_")
     session = {"hash": digest(token), "csrf": secrets.token_hex(32), "space_id": None, "subject": None, "label": None, "expires": now + 604800}
     db.execute("INSERT INTO sessions(hash,csrf,expires) VALUES(?,?,?)", (session["hash"], session["csrf"], session["expires"]))
@@ -265,9 +270,12 @@ def operation_guard(environ, space):
 
 def live_metadata(rows):
     ids = [row["id"] for row in rows]
-    values = CACHE.command("HMGET", DYNAMIC, *("meta:" + item for item in ids)) if ids else []
-    if values is None:
-        return {}, False
+    values = []
+    for offset in range(0, len(ids), 512):
+        batch = CACHE.command("HMGET", DYNAMIC, *("meta:" + item for item in ids[offset:offset + 512]))
+        if batch is None:
+            return {}, False
+        values.extend(batch)
     result = {}
     for device, raw in zip(ids, values):
         if raw:
@@ -288,7 +296,14 @@ def projection(row, meta=None, public=False, available=True):
     return result
 
 
-def snapshot(db, space=None, slug=None):
+def page_number(environ):
+    raw = parse_qs(environ.get("QUERY_STRING", "")).get("page", ["0"])[0]
+    if not re.fullmatch(r"[0-9]{1,10}", raw):
+        raise Rejected(400, "无效页码")
+    return int(raw)
+
+
+def snapshot(db, space=None, slug=None, number=0):
     if slug:
         page_id = link_payload("public", slug)
         page = db.execute("SELECT p.*,s.revision FROM pages p JOIN spaces s ON s.id=p.space_id WHERE p.id=? AND p.slug_hash=? AND p.enabled=1", (page_id, digest(slug))).fetchone()
@@ -299,20 +314,25 @@ def snapshot(db, space=None, slug=None):
     else:
         scope, title, space_id, revision = space["id"], space["title"], space["id"], space["revision"]
         selection = None
-    dynamic_revision = CACHE.command("HMGET", DYNAMIC, "__epoch", "rev:" + space_id)
-    key = NAMESPACE + "view:" + scope + ":" + digest(json.dumps([revision, dynamic_revision, title, selection])) + ":" + str(int(time.time()) // 5)
-    cached = CACHE.get(key) if dynamic_revision is not None else None
-    if cached:
+    key = NAMESPACE + "view:" + ("public:" if slug else "space:") + scope + ":" + str(number)
+    cached_view = CACHE.read_view(DYNAMIC, key, space_id)
+    fingerprint = digest(json.dumps([revision, cached_view[:2] if cached_view else None, title, selection, int(time.time()) // 5]))
+    if cached_view and cached_view[2]:
         try:
-            return BOX.open("view:" + digest(key), cached)
-        except ValueError:
+            cached = BOX.open("view:" + digest(key), json.loads(cached_view[2]))
+            if cached.get("fingerprint") == fingerprint:
+                return cached["snapshot"]
+        except (ValueError, TypeError, KeyError):
             pass
-    rows = db.execute("SELECT id,agent_id,name FROM devices WHERE space_id=? ORDER BY name,id LIMIT 32", (space_id,)).fetchall()
-    rows = [row for row in rows if selection is None or row["id"] in selection]
+    rows = db.execute("SELECT id,agent_id,name FROM devices WHERE space_id=? ORDER BY name,id", (space_id,)).fetchall()
+    selected = set(selection) if selection is not None else None
+    rows = [row for row in rows if selected is None or row["id"] in selected]
+    total = len(rows)
+    rows = rows[number * 100:(number + 1) * 100]
     metadata, available = live_metadata(rows)
-    result = {"title": title, "devices": [projection(row, metadata.get(row["id"]), bool(slug), available) for row in rows], "read_only": True, "realtime": CONFIG.get("enable_events") is True, "data_available": available}
+    result = {"title": title, "devices": [projection(row, metadata.get(row["id"]), bool(slug), available) for row in rows], "read_only": True, "realtime": CONFIG.get("enable_events") is True, "data_available": available, "page": number, "page_size": 100, "total": total}
     if available:
-        CACHE.put(key, BOX.seal("view:" + digest(key), result))
+        CACHE.put(key, BOX.seal("view:" + digest(key), {"fingerprint": fingerprint, "snapshot": result}), NAMESPACE + "views")
     return result
 
 
@@ -328,8 +348,11 @@ def receive(db, environ, expected_space):
         raise Rejected(400, "无效设备标识")
     if report.get("version") != "1.0" or not isinstance(report.get("collectors"), dict) or ("compact" in report and not isinstance(report["compact"], dict)):
         raise Rejected(400, "需要 v1.0 完整采集快照")
-    db.execute("BEGIN IMMEDIATE")
     machine = db.execute("SELECT * FROM devices WHERE token_hash=?", (credential,)).fetchone()
+    # Registration serializes durable ownership/token writes. Steady-state
+    # telemetry never takes the SQLite writer lock or rewrites the device row.
+    if not machine:
+        db.execute("BEGIN IMMEDIATE")
     space = db.execute("SELECT * FROM spaces WHERE bootstrap_hash=?", (credential,)).fetchone() if not machine else None
     if machine and machine["agent_id"] != agent:
         raise Rejected(403, "设备凭据只允许上报它自身")
@@ -338,13 +361,14 @@ def receive(db, environ, expected_space):
     space_id = machine["space_id"] if machine else space["id"]
     if space_id != expected_space:
         raise Rejected(403, "接入地址与设备凭据不匹配")
-    reply = {"status": "ok", "agent_id": agent, "commands": [], "report_role": "primary", "report_interval_ms": INTERVAL, "scope": "telemetry"}
+    # Stable per-device staggering spreads a fleet's subsequent reports without
+    # adding an Agent update/control mechanism.
+    interval = max(10000, min(300000, INTERVAL + int(digest(agent)[:8], 16) % max(1, INTERVAL // 5) - INTERVAL // 10))
+    reply = {"status": "ok", "agent_id": agent, "commands": [], "report_role": "primary", "report_interval_ms": interval, "scope": "telemetry"}
     if report.get("compact", {}).get("mode") == "delta":
         db.rollback()
         return {**reply, "request_full_report": True}
     existing = machine or db.execute("SELECT * FROM devices WHERE space_id=? AND agent_id=?", (space_id, agent)).fetchone()
-    if not existing and (db.execute("SELECT COUNT(*) FROM devices WHERE space_id=?", (space_id,)).fetchone()[0] >= 32 or db.execute("SELECT COUNT(*) FROM devices").fetchone()[0] >= 512):
-        raise Rejected(429, "设备数量已达到额度")
     name = report.get("hostname", agent)
     name = name[:120] if isinstance(name, str) and name.strip() else agent[:120]
     collectors = report["collectors"]
@@ -352,11 +376,12 @@ def receive(db, environ, expected_space):
     device_id = existing["id"] if existing else secrets.token_hex(16)
     machine_token = "sat_" + secrets.token_hex(16) if not machine else None
     token_hash = digest(machine_token) if machine_token else machine["token_hash"]
-    db.execute("INSERT INTO devices VALUES(?,?,?,?,?,?) ON CONFLICT(space_id,agent_id) DO UPDATE SET token_hash=excluded.token_hash", (device_id, space_id, agent, token_hash, name, int(time.time())))
+    if not machine:
+        db.execute("INSERT INTO devices VALUES(?,?,?,?,?,?) ON CONFLICT(space_id,agent_id) DO UPDATE SET token_hash=excluded.token_hash", (device_id, space_id, agent, token_hash, name, int(time.time())))
     metadata = {"name": name, "received_at": int(time.time()), "cpu": percent(cpu.get("usage_percent", cpu.get("usage"))), "memory": percent(memory.get("usage_percent")), "disk": percent(disk.get("usage_percent"))}
-    stored = CACHE.store_report(DYNAMIC, device_id, space_id, BOX.seal("report:" + device_id, report), BOX.seal("metrics:" + device_id, metadata), secrets.token_hex(16), MAX_DYNAMIC_BYTES)
+    stored = CACHE.store_report(DYNAMIC, device_id, space_id, BOX.seal_report("report:" + device_id, report), BOX.seal("metrics:" + device_id, metadata), secrets.token_hex(16))
     if stored != 1:
-        raise Rejected(503, "实时数据存储暂不可用或已达到额度；本次上报未确认")
+        raise Rejected(503, "实时数据存储暂不可用；本次上报未确认")
     try:
         db.commit()
     except sqlite3.Error:
@@ -402,6 +427,7 @@ def events(environ, slug=None):
         session = browser_session(db, environ)[0] if not slug else None
         space = current_space(db, session) if session else None
         snapshot(db, space, slug)
+        observed_space = space["id"] if space else db.execute("SELECT space_id FROM pages WHERE slug_hash=?", (digest(slug),)).fetchone()[0]
         scope = slug or space["id"]
         now = int(time.time())
         scope_hash = digest(scope)
@@ -423,7 +449,7 @@ def events(environ, slug=None):
                         if active and active["space_id"] != space["id"]:
                             raise Rejected(403, "空间已切换")
                         view = snapshot(db, current_space(db, active) if active else None, slug)
-                    revision = digest(json.dumps(view, sort_keys=True))
+                    revision = digest(json.dumps([view, CACHE.command("HGET", DYNAMIC, "rev:" + observed_space)], sort_keys=True))
                     if revision != previous:
                         yield ("event: changed\ndata: " + json.dumps({"revision": revision}) + "\n\n").encode()
                         previous = revision
@@ -446,11 +472,11 @@ def route(db, environ):
     if method == "POST" and re.fullmatch(r"/ingest/" + LINK, path):
         return 200, receive(db, environ, link_payload("ingest", path.rsplit("/", 1)[1])), []
     if method == "GET" and re.fullmatch(r"/api/public/status/" + LINK, path):
-        return 200, snapshot(db, slug=path.rsplit("/", 1)[1]), []
+        return 200, snapshot(db, slug=path.rsplit("/", 1)[1], number=page_number(environ)), []
     session, headers = browser_session(db, environ, create=path == "/api/session" and method == "GET")
     if method == "GET" and path == "/api/session":
         space = db.execute("SELECT * FROM spaces WHERE id=?", (session["space_id"],)).fetchone()
-        owned = db.execute("SELECT * FROM spaces WHERE owner=? ORDER BY created_at LIMIT 16", (session["subject"],)).fetchall() if session["subject"] else []
+        owned = db.execute("SELECT * FROM spaces WHERE owner=? ORDER BY created_at", (session["subject"],)).fetchall() if session["subject"] else []
         return 200, {"csrf": session["csrf"], "space": space_summary(space) if space else None, "manage_token": BOX.seal("manage", {"id": space["id"]}) if space else None, "ingest_url": ORIGIN + "/ingest/" + space["channel"] if space else None, "spaces": [space_summary(row) for row in owned], "login": {"available": bool(ISSUER and CONFIG.get("oidc_client_id") and CONFIG.get("oidc_client_secret")), "authenticated": bool(session["subject"]), "label": session["label"]}}, headers
     if method == "GET" and path == "/auth/callback":
         query = parse_qs(environ.get("QUERY_STRING", ""))
@@ -479,18 +505,23 @@ def route(db, environ):
     if method == "GET" and path == "/api/devices":
         space = current_space(db, session)
         operation_guard(environ, space)
-        return 200, snapshot(db, space), headers
+        return 200, snapshot(db, space, number=page_number(environ)), headers
+    if method == "GET" and path == "/api/device-options":
+        space = current_space(db, session)
+        operation_guard(environ, space)
+        rows = db.execute("SELECT id,name FROM devices WHERE space_id=? ORDER BY name,id", (space["id"],)).fetchall()
+        return 200, {"devices": [dict(row) for row in rows]}, headers
     if method == "GET" and re.fullmatch(r"/api/devices/[a-f0-9]{32}", path):
         space = current_space(db, session)
         operation_guard(environ, space)
         row = db.execute("SELECT id FROM devices WHERE id=? AND space_id=?", (path.rsplit("/", 1)[1], space["id"])).fetchone()
         if not row:
             raise Rejected(404, "设备不存在")
-        raw = CACHE.command("HGET", DYNAMIC, "raw:" + row["id"])
+        raw = CACHE.command("GET", DYNAMIC + ":snapshot:" + row["id"])
         if raw is None:
             raise Rejected(503, "实时快照暂不可用，请等待设备重新上报")
         try:
-            report = BOX.open("report:" + row["id"], raw)
+            report = BOX.open_report("report:" + row["id"], raw)
         except ValueError:
             raise Rejected(503, "实时快照校验失败，请等待设备重新上报") from None
         return 200, {"report": report, "read_only": True}, headers
@@ -502,7 +533,7 @@ def route(db, environ):
     if method == "GET" and path == "/api/pages":
         space = current_space(db, session)
         operation_guard(environ, space)
-        rows = db.execute("SELECT id,title,slug_ciphertext,enabled,selection FROM pages WHERE space_id=? ORDER BY id LIMIT 16", (space["id"],)).fetchall()
+        rows = db.execute("SELECT id,title,slug_ciphertext,enabled,selection FROM pages WHERE space_id=? ORDER BY id", (space["id"],)).fetchall()
         return 200, {"pages": [{"id": row["id"], "title": row["title"], "slug": BOX.open("stored-link:" + row["id"], row["slug_ciphertext"]), "enabled": bool(row["enabled"]), "selection": json.loads(row["selection"])} for row in rows]}, headers
     if method != "POST":
         raise Rejected(404, "接口不存在")
@@ -527,8 +558,6 @@ def route(db, environ):
             raise Rejected(400, "空间名称需要 1–80 个字符")
         recovery, bootstrap, space_id = secret("wmr_"), secret("wmb_"), secrets.token_hex(16)
         begin_browser_write(db, session)
-        if db.execute("SELECT COUNT(*) FROM spaces").fetchone()[0] >= 1000 or (session["subject"] and db.execute("SELECT COUNT(*) FROM spaces WHERE owner=?", (session["subject"],)).fetchone()[0] >= 16):
-            raise Rejected(429, "空间数量已达到额度")
         db.execute("INSERT INTO spaces(id,title,recovery_hash,bootstrap_hash,owner,created_at,channel) VALUES(?,?,?,?,?,?,?)", (space_id, title.strip(), digest(recovery), digest(bootstrap), session["subject"], int(time.time()), BOX.seal("ingest", {"id": space_id})))
         db.execute("UPDATE sessions SET space_id=? WHERE hash=?", (space_id, session["hash"]))
         db.commit()
@@ -594,7 +623,7 @@ def route(db, environ):
         db.execute("DELETE FROM devices WHERE space_id=?", (space["id"],))
         db.execute("DELETE FROM spaces WHERE id=?", (space["id"],))
         db.commit()
-        CACHE.remove_reports(DYNAMIC, device_ids, space["id"])
+        CACHE.remove_reports(DYNAMIC, device_ids, space["id"], forget_space=True)
         return 200, {"ok": True}, headers
     if path in ("/api/spaces/claim", "/api/recovery/rotate"):
         recovery, bootstrap = secret("wmr_"), secret("wmb_")
@@ -607,8 +636,6 @@ def route(db, environ):
         if path.endswith("claim") and (not active["subject"] or (space["owner"] and space["owner"] != active["subject"])):
             raise Rejected(403, "需要正常登录，且不能领用其他账号的空间")
         owner = session["subject"] if path.endswith("claim") else space["owner"]
-        if path.endswith("claim") and not space["owner"] and db.execute("SELECT COUNT(*) FROM spaces WHERE owner=?", (owner,)).fetchone()[0] >= 16:
-            raise Rejected(429, "账号已达到空间额度")
         db.execute("UPDATE spaces SET owner=?,recovery_hash=?,bootstrap_hash=? WHERE id=?", (owner, digest(recovery), digest(bootstrap), space["id"]))
         db.execute("DELETE FROM sessions WHERE space_id=? AND hash!=?", (space["id"], session["hash"]))
         db.commit()
@@ -632,14 +659,12 @@ def route(db, environ):
         page_id = value.get("id")
         begin_browser_write(db, session, space["id"])
         if path == "/api/pages/create":
-            if db.execute("SELECT COUNT(*) FROM pages WHERE space_id=?", (space["id"],)).fetchone()[0] >= 16:
-                raise Rejected(429, "最多创建 16 个分享页")
             page_id = secrets.token_hex(16)
         elif not isinstance(page_id, str) or not db.execute("SELECT id FROM pages WHERE id=? AND space_id=?", (page_id, space["id"])).fetchone():
             raise Rejected(404, "分享页不存在")
         if path in ("/api/pages/create", "/api/pages/update"):
             title, selection, enabled = value.get("title"), value.get("device_ids"), value.get("enabled", True)
-            if not isinstance(title, str) or not 1 <= len(title.strip()) <= 80 or not isinstance(selection, list) or len(selection) > 32 or type(enabled) is not bool or any(not isinstance(item, str) for item in selection):
+            if not isinstance(title, str) or not 1 <= len(title.strip()) <= 80 or not isinstance(selection, list) or type(enabled) is not bool or any(not isinstance(item, str) for item in selection):
                 raise Rejected(400, "请填写名称并选择自己的设备")
             owned = {row[0] for row in db.execute("SELECT id FROM devices WHERE space_id=?", (space["id"],))}
             if len(set(selection)) != len(selection) or not set(selection).issubset(owned):
@@ -695,6 +720,11 @@ def application(environ, start_response):
                 status, data, extra = route(db, environ)
             payload = data if isinstance(data, bytes) else json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()
             content = "application/json; charset=utf-8"
+            if status == 200 and method == "GET" and (path == "/api/devices" or path.startswith("/api/public/status/")):
+                etag = '"' + hashlib.sha256(payload).hexdigest() + '"'
+                extra.append(("ETag", etag))
+                if environ.get("HTTP_IF_NONE_MATCH") == etag:
+                    status, payload = 304, b""
     except Rejected as error:
         status, payload, extra, content = error.status, json.dumps({"error": translate(error.message, locale)}, ensure_ascii=False).encode(), [], "application/json; charset=utf-8"
     except (sqlite3.Error, OSError):

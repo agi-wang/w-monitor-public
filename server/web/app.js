@@ -3,7 +3,9 @@ const locale = window.WM_I18N.locale;
 const t = (message, values = {}) => (window.WM_I18N.messages[message] ?? message).replace(/\{(\w+)\}/g, (match, key) => values[key] ?? match);
 const $ = (id) => document.getElementById(id);
 const publicSlug = /^\/status\/(wm1_[A-Za-z0-9_-]{40,320})$/.exec(location.pathname)?.[1];
+const responses = new Map();
 let session, devices = [], pages = [], bootstrap = "", editingPage = null;
+let lastView, currentPage = 0;
 let events, poll, refreshing = false, refreshAgain = false, generation = 0, allowEvents = false;
 
 function notice(message = "") { $("notice").textContent = message; $("notice").hidden = !message; }
@@ -23,14 +25,19 @@ async function run(action) {
   try { await action(); } catch (error) { notice(error.message || t("操作失败，请重试")); }
 }
 async function api(path, value) {
+  const previous = value === undefined ? responses.get(path) : undefined;
   const response = await fetch(path, {
     method: value === undefined ? "GET" : "POST", credentials: publicSlug ? "omit" : "same-origin",
     cache: "no-store", redirect: "error",
-    headers: { ...(!publicSlug && session?.manage_token ? { "X-Operation-Token": session.manage_token } : {}), ...(value === undefined ? {} : { "Content-Type": "application/json", "X-CSRF-Token": session?.csrf ?? "" }) },
+    headers: { ...(previous ? { "If-None-Match": previous.etag } : {}), ...(!publicSlug && session?.manage_token ? { "X-Operation-Token": session.manage_token } : {}), ...(value === undefined ? {} : { "Content-Type": "application/json", "X-CSRF-Token": session?.csrf ?? "" }) },
     body: value === undefined ? undefined : JSON.stringify(value),
   });
+  if (response.status === 304 && previous) return previous.data;
   const data = await response.json();
+  if (!response.ok) responses.delete(path);
   if (!response.ok) throw new Error(data.error || t("请求失败（{status}）", { status: response.status }));
+  const etag = response.headers.get("ETag");
+  if (etag) { responses.set(path, { etag, data }); if (responses.size > 8) responses.delete(responses.keys().next().value); }
   return data;
 }
 function empty(target, title, description) {
@@ -73,6 +80,16 @@ function drawDevices(target, rows, publicView = false) {
   }
   table.append(body); target.replaceChildren(table);
 }
+function drawPaging(target, data) {
+  if (data.total <= data.page_size) return;
+  const pager = node("div", undefined, "pagination");
+  const move = async (number) => { generation += 1; currentPage = number; lastView = undefined; await refresh(); };
+  const previous = button(t("上一页"), () => move(Math.max(0, currentPage - 1)));
+  const next = button(t("下一页"), () => move(currentPage + 1));
+  previous.disabled = currentPage === 0; next.disabled = (currentPage + 1) * data.page_size >= data.total;
+  pager.append(previous, node("span", t("第 {page} / {pages} 页 · 共 {total} 台设备", { page: currentPage + 1, pages: Math.ceil(data.total / data.page_size), total: data.total })), next);
+  target.append(pager);
+}
 function drawPages() {
   $("page-count").textContent = pages.length;
   if (!pages.length) { empty($("page-list"), t("创建你的第一个分享页"), t("例如 Page One、Page Two。每一页都可以选择不同设备，并单独停用。")); return; }
@@ -85,7 +102,8 @@ function drawPages() {
       actions.append(button(t("复制链接"), () => copy(location.origin + `/status/${page.slug}`)));
     }
     actions.append(button(t("编辑"), () => openPage(page)), button(page.enabled ? t("停用") : t("启用"), async () => {
-      await api("/api/pages/update", { id: page.id, title: page.title, enabled: !page.enabled, device_ids: page.selection.filter((id) => devices.some((device) => device.id === id)) }); await refreshPages();
+      const available = new Set((await api("/api/device-options")).devices.map((device) => device.id));
+      await api("/api/pages/update", { id: page.id, title: page.title, enabled: !page.enabled, device_ids: page.selection.filter((id) => available.has(id)) }); await refreshPages();
     }), button(t("更换链接"), async () => {
       if (!confirm(t("更换后，原公开链接会立即失效。"))) return;
       await api("/api/pages/rotate", { id: page.id }); await refreshPages();
@@ -112,15 +130,19 @@ async function refresh() {
   if (refreshing) { refreshAgain = true; return; }
   refreshing = true; const current = generation;
   try {
-    const data = await api(publicSlug ? `/api/public/status/${publicSlug}` : "/api/devices");
+    const data = await api((publicSlug ? `/api/public/status/${publicSlug}` : "/api/devices") + `?page=${currentPage}`);
     if (current !== generation) return;
+    if (data.page > 0 && data.page * data.page_size >= data.total) { currentPage = Math.max(0, Math.ceil(data.total / data.page_size) - 1); refreshAgain = true; return; }
     allowEvents = data.realtime === true;
     notice(data.data_available === false ? t("实时数据暂时不可用，已隐藏资源读数。空间与设备接入信息仍已保存。") : "");
+    if (data === lastView) return;
+    lastView = data;
     if (publicSlug) { $("public-title").textContent = data.title; drawDevices($("public-list"), data.devices, true); }
-    else { devices = data.devices; $("device-count").textContent = devices.length; drawDevices($("device-list"), devices); }
+    else { devices = data.devices; $("device-count").textContent = data.total; drawDevices($("device-list"), devices); }
+    drawPaging($(publicSlug ? "public-list" : "device-list"), data);
   } catch (error) {
     if (current !== generation) return;
-    notice(error.message);
+    notice(error.message); lastView = undefined;
     // Never leave a revoked public snapshot, or a failed private read, visible.
     empty($(publicSlug ? "public-list" : "device-list"), t("暂时无法读取"), t("请刷新页面；链接可能已停用，或当前会话已经失效。"));
     if (!publicSlug) devices = [];
@@ -160,7 +182,7 @@ function startRealtime() {
   };
 }
 async function loadSession() {
-  generation += 1; stopRealtime();
+  generation += 1; stopRealtime(); responses.clear(); lastView = undefined; currentPage = 0;
   session = await api("/api/session");
   $("login").hidden = !session.login.available || session.login.authenticated;
   $("logout").hidden = !session.space && !session.login.authenticated;
@@ -190,21 +212,22 @@ function showRecovery(key, rotated = false) {
 function shellQuote(value) { return "'" + value.replaceAll("'", "'\"'\"'") + "'"; }
 function installCommand() {
   if (!bootstrap) return t("点击“生成新的接入凭据”，再复制安装命令。已注册设备不受凭据轮换影响。");
-  const config = shellQuote(JSON.stringify({ endpoint_url: session.ingest_url, auth_token: bootstrap, interval: 60000 }));
+  const config = shellQuote(JSON.stringify({ endpoint_url: session.ingest_url, auth_token: bootstrap, interval: 60000, compress_reports: true }));
   return `(set -eu; set -o pipefail; umask 077; wm_dir="$HOME/.config/w-monitor-public"; [ ! -L "$wm_dir" ]; mkdir -p "$wm_dir"; [ -O "$wm_dir" ]; chmod 700 "$wm_dir"; [ ! -L "$wm_dir/agent.json" ]; if [ ! -e "$wm_dir/agent.json" ]; then (set -C; printf '%s\\n' ${config} > "$wm_dir/agent.json"); fi; curl -fsSL --proto '=https' --max-time 30 'https://raw.githubusercontent.com/agi-wang/w-monitor-public/main/install.sh' | bash; exec "$HOME/.local/bin/w-monitor-lite" --config "$wm_dir/agent.json")`;
 }
 async function copy(value) {
   try { await navigator.clipboard.writeText(value); notice(t("已复制。")); }
   catch { throw new Error(t("自动复制未完成，请选中文本手动复制。")); }
 }
-function openPage(page = null) {
+async function openPage(page = null) {
+  const options = (await api("/api/device-options")).devices;
   editingPage = page; $("page-dialog-title").textContent = page ? t("编辑分享页") : t("新建分享页");
   $("page-title").value = page?.title ?? ""; $("page-enabled").checked = page ? Boolean(page.enabled) : true;
-  $("page-devices").replaceChildren(...devices.map((device) => {
+  $("page-devices").replaceChildren(...options.map((device) => {
     const label = node("label"), input = node("input"); input.type = "checkbox"; input.value = device.id; input.checked = Boolean(page?.selection.includes(device.id));
     label.append(input, document.createTextNode(device.name)); return label;
   }));
-  if (!devices.length) $("page-devices").append(node("p", t("尚无设备，可以先保存页面，接入设备后再选择。"), "subtle"));
+  if (!options.length) $("page-devices").append(node("p", t("尚无设备，可以先保存页面，接入设备后再选择。"), "subtle"));
   $("page-dialog").showModal();
 }
 async function showReport(device) {
@@ -238,7 +261,7 @@ $("generate-bootstrap").onclick = () => run(async () => {
   bootstrap = (await api("/api/bootstrap/rotate", {})).bootstrap_key; $("install-command").value = installCommand(); $("copy-install").disabled = false;
 });
 $("copy-install").onclick = () => run(() => copy($("install-command").value));
-$("new-page").onclick = () => openPage();
+$("new-page").onclick = () => run(() => openPage());
 $("bind-email").onclick = () => run(async () => { await api("/api/email/bind", { enabled: true }); await refreshEmail(); notice(t("已绑定验证过的邮箱，并开启通知。")); });
 $("save-email").onclick = () => run(async () => { await api("/api/email/settings", { enabled: $("email-enabled").checked }); await refreshEmail(); notice(t("通知设置已保存。")); });
 $("unbind-email").onclick = () => run(async () => {

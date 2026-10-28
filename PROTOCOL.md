@@ -6,8 +6,8 @@ server dependency or host-control transport. Unknown report fields are tolerated
 
 ## Lite → receiver
 
-Send UTF-8 JSON over HTTPS to the space-issued `/ingest/{encrypted-token}` with
-`Authorization: Bearer <bootstrap-or-device-token>`. Maximum decoded body: 8 MiB.
+Send UTF-8 JSON (identity or gzip Content-Encoding) over HTTPS to the space-issued `/ingest/{encrypted-token}` with
+`Authorization: Bearer <bootstrap-or-device-token>`. Maximum wire and decoded body: 8 MiB.
 Required fields: `version: "1.0"`, nonempty bounded `agent_id`, object `collectors`.
 Optional `hostname` supplies the display name. Collector values may be direct
 objects or `{ "data": {...} }` wrappers; full reports remain visible only to the
@@ -25,7 +25,9 @@ A successful response contains `status: "ok"`, `agent_id`, `scope: "telemetry"`,
 Unsupported delta input returns `request_full_report: true` without storing a
 snapshot. There are no commands, update URLs, control-channel endpoints or ACKs.
 Lite ignores control/update fields even when talking to a different server.
-Redis failure or the dynamic byte limit returns 503; the report is not acknowledged.
+Redis failure returns 503; the report is not acknowledged. Steady-state reports
+authenticate with a SQLite read and update only Redis. Public Agent configs enable
+gzip; other receiver configs opt in locally with `compress_reports: true`.
 
 ## Language negotiation
 
@@ -52,15 +54,22 @@ identity may explicitly claim a recovered space; identity never grants host cont
 
 ## Public pages and refresh
 
-Each space supports up to 16 independently selected pages. Only device IDs owned
+Each space supports independently selected pages without a fixed count quota. Only device IDs owned
 by that space can be selected. `/status/{encrypted-token}` renders the page and
 `/api/public/status/{encrypted-token}` returns only names, online status, last receive
-time, CPU/memory/disk percentages, data availability and refresh metadata. There
-are no device identifiers, addresses, full collectors or credentials. Disabled,
+time, CPU/memory/disk percentages, data availability and refresh metadata. Lists are paginated using zero-based `?page=N` with 100 devices per page and
+`page`, `page_size`, `total` response fields. This limits work per view without
+limiting registered or published device counts. The owner-only `/api/device-options`
+returns the complete device ID/name list for selection. There are no device
+identifiers in public projections, addresses, full collectors or credentials. Disabled,
 rotated or deleted links return 404 before cache access.
 
 Redis holds AES-GCM-encrypted dynamic reports/metrics and short view caches.
 SQLite holds only durable identity/ownership/credential/page/contact/outbox state.
+Raw snapshots are compressed before encryption and expire five minutes after their
+last update; last-seen metrics remain until the device is removed. View caches have
+fixed scope/page keys with short expiry and bounded working memory. Responses use
+ETag/If-None-Match after authorization, returning 304 when unchanged.
 An absent last report yields `online: null`; unavailable or absent Redis data never
 becomes an inferred host outage. Offline percentages are null. Reporting deadlines
 use server receive time and the configured interval. Browser polling defaults to

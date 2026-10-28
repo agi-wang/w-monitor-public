@@ -61,51 +61,54 @@ class RedisCache:
             self.retry_at = time.monotonic() + 5
             return None
 
-    def get(self, key):
-        raw = self.command("GET", key)
-        try:
-            return json.loads(raw) if raw else None
-        except (ValueError, TypeError):
-            return None
-
-    def put(self, key, value):
+    def put(self, key, value, registry):
         raw = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-        return self.command("SETEX", key, 15, raw) if len(raw.encode()) <= 1024 * 1024 else None
+        if len(raw.encode()) > 32768:
+            return None
+        # At most 512 small projections (16 MiB payload) with one fixed key per
+        # scope. The registry expires too; stale entries cannot grow forever.
+        script = """
+        redis.call('ZREMRANGEBYSCORE',KEYS[2],'-inf',ARGV[2])
+        if redis.call('ZSCORE',KEYS[2],KEYS[1])==false and redis.call('ZCARD',KEYS[2])>=512 then
+          local old=redis.call('ZPOPMIN',KEYS[2],1)
+          if #old>0 then redis.call('DEL',old[1]) end
+        end
+        redis.call('SETEX',KEYS[1],15,ARGV[1])
+        redis.call('ZADD',KEYS[2],tonumber(ARGV[2])+15,KEYS[1])
+        redis.call('EXPIRE',KEYS[2],30)
+        return 1
+        """
+        return self.command("EVAL", script, 2, key, registry, raw, int(time.time()))
+
+    def read_view(self, dynamic, key, space):
+        return self.command("EVAL", "return {redis.call('HGET',KEYS[1],'__epoch'),redis.call('HGET',KEYS[1],'rev:'..ARGV[1]),redis.call('GET',KEYS[2])}", 2, dynamic, key, space)
 
     def healthy(self):
         return self.command("PING") == "PONG"
 
-    def store_report(self, key, device, space, raw, meta, epoch, budget):
-        # One hash keeps its byte counter and data in the same Redis eviction
-        # unit. Atomic fixed Lua prevents concurrent writers exceeding budget.
+    def store_report(self, key, device, space, raw, meta, epoch):
+        # Full snapshots are a short-lived compressed cache, not a resource
+        # quota. Offline raw payloads expire; compact last-seen metadata remains.
         script = """
-        local a='raw:'..ARGV[1]; local b='meta:'..ARGV[1]
-        local old=string.len(redis.call('HGET',KEYS[1],a) or '')+string.len(redis.call('HGET',KEYS[1],b) or '')
-        local total=tonumber(redis.call('HGET',KEYS[1],'__bytes') or 0)-old+string.len(ARGV[3])+string.len(ARGV[4])
-        if total>tonumber(ARGV[6]) then return -1 end
+        redis.call('SETEX',KEYS[2],300,ARGV[3])
         if redis.call('HEXISTS',KEYS[1],'__epoch')==0 then redis.call('HSET',KEYS[1],'__epoch',ARGV[5]) end
-        redis.call('HSET',KEYS[1],a,ARGV[3],b,ARGV[4],'__bytes',total)
+        redis.call('HSET',KEYS[1],'meta:'..ARGV[1],ARGV[4])
         redis.call('HINCRBY',KEYS[1],'rev:'..ARGV[2],1)
         return 1
         """
-        return self.command("EVAL", script, 1, key, device, space, raw, meta, epoch, budget)
+        return self.command("EVAL", script, 2, key, key + ":snapshot:" + device, device, space, raw, meta, epoch)
 
-    def remove_reports(self, key, devices, space):
-        if not devices:
-            return 1
+    def remove_reports(self, key, devices, space, forget_space=False):
         script = """
-        local removed=0
-        for i=2,#ARGV do
-          local a='raw:'..ARGV[i]; local b='meta:'..ARGV[i]
-          removed=removed+string.len(redis.call('HGET',KEYS[1],a) or '')+string.len(redis.call('HGET',KEYS[1],b) or '')
-          redis.call('HDEL',KEYS[1],a,b)
+        for i=3,#ARGV do
+          redis.call('HDEL',KEYS[1],'meta:'..ARGV[i])
+          redis.call('DEL',KEYS[1]..':snapshot:'..ARGV[i])
         end
-        local total=math.max(0,tonumber(redis.call('HGET',KEYS[1],'__bytes') or 0)-removed)
-        redis.call('HSET',KEYS[1],'__bytes',total)
-        redis.call('HINCRBY',KEYS[1],'rev:'..ARGV[1],1)
+        if ARGV[2]=='1' then redis.call('HDEL',KEYS[1],'rev:'..ARGV[1])
+        else redis.call('HINCRBY',KEYS[1],'rev:'..ARGV[1],1) end
         return 1
         """
-        return self.command("EVAL", script, 1, key, space, *devices)
+        return self.command("EVAL", script, 1, key, space, int(forget_space), *devices)
 
     def rate(self, key, identity, maximum, seconds):
         script = """

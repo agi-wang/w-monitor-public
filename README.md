@@ -31,7 +31,8 @@ request root, or schedule updates. Installed Agents never upgrade on server requ
 The preserved v1.0.80 release predates the repository rename and has the original
 `agi-wang/w-monitor-lite` attestation identity; the installer handles that exact tag.
 
-The space dashboard supplies a private configuration containing its encrypted
+The space dashboard supplies a private configuration with `compress_reports: true`
+(gzip over HTTPS, within the same 8 MiB decoded report limit), containing its encrypted
 `endpoint_url` and registration credential. Save it as an owner-only file:
 
 ```sh
@@ -55,8 +56,10 @@ notifications remember the browser language when email settings are saved.
 
 ## Receiver storage and security
 
-- Redis stores encrypted dynamic reports, current metrics, short view caches,
-  rate limits and bounded stream leases. SQLite never stores telemetry snapshots.
+- Redis stores compressed, encrypted dynamic reports, current metrics, short view caches,
+  rate limits and bounded stream leases. Full snapshots expire five minutes after
+  their last report; compact last-seen metadata remains. SQLite never stores
+  telemetry snapshots. Steady-state reports do not write SQLite.
 - SQLite persists monitoring spaces, hashed credentials, ownership, page choices,
   encrypted email contacts, consent and the bounded notification outbox.
 - AES-256-GCM from PyCA encrypts purpose-bound public, management and ingest
@@ -65,7 +68,10 @@ notifications remember the browser language when email settings are saved.
   recovery key is required. Browser changes additionally require Origin and CSRF
   validation. Report credentials cannot read the dashboard or operate a host.
 - Missing Redis data displays unknown, rather than a false offline status. Failed
-  ingestion returns 503; there is no SQLite telemetry fallback.
+  ingestion returns 503; there is no SQLite telemetry fallback. There is no
+  application quota on device/space/page counts or a required Redis memory cap.
+  Status lists paginate 100 devices at a time and use conditional requests; page
+  editing loads the complete owned device list separately.
 - Back up the SQLite database **and the private instance encryption key**. Losing
   that key makes existing encrypted data and links unreadable. Do not rotate it
   casually; individual public links and recovery keys can be rotated in the UI.

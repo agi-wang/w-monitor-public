@@ -53,8 +53,9 @@ privately. Rotation invalidates other space sessions. Share-link rotation/disabl
 is checked on every request, including when a cached projection exists.
 
 Redis is required for ingestion and rate limiting; unavailable telemetry is unknown
-and is never written into SQLite. Dynamic byte budgets, space/device/session/page
-quotas, request bounds and short timeouts limit use within a shared-host account.
+and is never written into SQLite. Snapshot expiry, bounded projection caches, request size bounds, authentication
+rate limits and short timeouts reduce unnecessary work. There are no application
+quotas on device, space or page counts; hosting resources remain operator-owned.
 These limits do not provide a complete public-internet DDoS defense. Enforce network
 and account resource limits at the hosting edge as well.
 

@@ -3,6 +3,10 @@ import html
 import re
 
 EN = {
+    '无效页码': 'Invalid page number',
+    '上一页': 'Previous',
+    '下一页': 'Next',
+    '第 {page} / {pages} 页 · 共 {total} 台设备': 'Page {page} / {pages} · {total} devices',
     ' · 只读快照': ' · Read-only snapshot',
     'JSON 必须是对象': 'JSON must be an object',
     'Linux AMD64 / ARM64。先安装 curl、Python 3 和 GitHub CLI；安装器会验证发布来源。请以你允许进行采集的系统用户运行。': 'Linux AMD64 / ARM64. Install curl, Python 3 and GitHub CLI first. The installer verifies release provenance. Run as a system user whose collection permissions you trust.',
@@ -55,7 +59,7 @@ EN = {
     '定时刷新': 'Refreshing periodically',
     '实时快照暂不可用，请等待设备重新上报': 'The live snapshot is unavailable. Wait for the device to report again',
     '实时快照校验失败，请等待设备重新上报': 'Snapshot integrity check failed. Wait for the device to report again',
-    '实时数据存储暂不可用或已达到额度；本次上报未确认': 'Live storage is unavailable or at capacity; this report was not acknowledged',
+    '实时数据存储暂不可用；本次上报未确认': 'Live storage is unavailable; this report was not acknowledged',
     '实时数据暂时不可用，已隐藏资源读数。空间与设备接入信息仍已保存。': 'Live data is temporarily unavailable. Metrics are hidden; your space and device registrations are preserved.',
     '实时更新': 'Live updates',
     '实时服务暂不可用，请稍后再试': 'Live updates are temporarily unavailable. Try again later',
@@ -158,7 +162,7 @@ EN = {
     '请先绑定已验证邮箱': 'Bind a verified email first',
     '请创建、恢复或登录监控空间': 'Create or restore a space, or sign in',
     '请刷新页面；链接可能已停用，或当前会话已经失效。': 'Refresh the page. The link may be disabled or your session may have expired.',
-    '请发送未压缩的 JSON': 'Send uncompressed JSON',
+    '请发送 JSON（上报支持 gzip 压缩）': 'Send JSON (telemetry reports also accept gzip)',
     '请填写名称并选择自己的设备': 'Enter a name and select your own devices',
     '请完整输入空间名称以删除': 'Enter the complete space name to delete it',
     '请求地址过长': 'Request URL too long',

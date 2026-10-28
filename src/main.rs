@@ -101,16 +101,20 @@ async fn post_report(
     endpoint: &url::Url,
     token: &str,
     body: &[u8],
+    compressed: bool,
 ) -> Result<Value> {
     // No redirect can forward a credential. The configured origin is the only
     // telemetry destination, and every request has a whole-request deadline.
-    let response = client
+    let request = client
         .post(endpoint.clone())
         .bearer_auth(token)
-        .header("Content-Type", "application/json")
-        .body(body.to_vec())
-        .send()
-        .await?;
+        .header("Content-Type", "application/json");
+    let request = if compressed {
+        request.header("Content-Encoding", "gzip")
+    } else {
+        request
+    };
+    let response = request.body(body.to_vec()).send().await?;
     if !response.status().is_success() {
         bail!("Report rejected: HTTP {}", response.status().as_u16());
     }
@@ -191,6 +195,9 @@ async fn main() -> Result<()> {
         .as_u64()
         .unwrap_or(60_000)
         .clamp(10_000, 1_800_000);
+    // Enabled by Public configurations; existing receiver configurations retain
+    // their transport until a local operator explicitly enables compression.
+    let compress_reports = config["compress_reports"].as_bool().unwrap_or(false);
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
@@ -314,9 +321,22 @@ async fn main() -> Result<()> {
         if bytes.len() > MAX_REPORT {
             bail!("Collected report exceeds 8 MiB; refusing an unbounded upload");
         }
+        let (bytes, compressed) = if compress_reports && bytes.len() >= 4096 {
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(&bytes)?;
+            let encoded = encoder.finish()?;
+            if encoded.len() < bytes.len() {
+                (encoded, true)
+            } else {
+                (bytes, false)
+            }
+        } else {
+            (bytes, false)
+        };
         let mut response = None;
         for attempt in 0..=2 {
-            match post_report(&client, &endpoint, &token, &bytes).await {
+            match post_report(&client, &endpoint, &token, &bytes, compressed).await {
                 Ok(value) => {
                     response = Some(value);
                     break;

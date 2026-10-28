@@ -80,7 +80,6 @@
           },
           "devices": {
             "type": "array",
-            "maxItems": 32,
             "items": {
               "type": "object",
               "properties": {
@@ -138,6 +137,17 @@
           },
           "data_available": {
             "type": "boolean"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "page_size": {
+            "const": 100
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       },
@@ -161,7 +171,6 @@
           },
           "device_ids": {
             "type": "array",
-            "maxItems": 32,
             "uniqueItems": true,
             "items": {
               "type": "string",
@@ -1233,8 +1242,29 @@
           },
           "404": {
             "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          },
+          "304": {
+            "description": "Authorized snapshot unchanged; no body"
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
       }
     },
     "/api/devices/{id}": {
@@ -1348,6 +1378,9 @@
           },
           "404": {
             "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          },
+          "304": {
+            "description": "Authorized snapshot unchanged; no body"
           }
         },
         "description": "Only names, online state, server receive time and basic resource percentages. No device IDs, addresses, raw collectors, logs or credentials. Offline percentages are null. Publication and ownership are checked before cache access. Disabled, rotated or deleted links return 404.",
@@ -1359,6 +1392,22 @@
             "schema": {
               "type": "string",
               "pattern": "^wm1_[A-Za-z0-9_-]{40,320}$"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "schema": {
+              "type": "string"
             }
           }
         ]
@@ -1484,7 +1533,7 @@
             "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
           }
         },
-        "description": "Maximum uncompressed UTF-8 JSON body: 8 MiB. Authorization: Bearer bootstrap or bound machine token. Machine tokens are bound to one space and agent_id. Replies contain scope=telemetry, commands=[], and a bounded report interval; first registration returns a sat_ machine token. No commands, acknowledgements, alternate control transport or update directives are processed. Unsupported delta snapshots request a full report. Additional fields are tolerated. The encrypted ingest token must identify the credential’s space. A missing Redis write returns 503 and does not acknowledge the report.",
+        "description": "Maximum decoded UTF-8 JSON body: 8 MiB. Authorization: Bearer bootstrap or bound machine token. Machine tokens are bound to one space and agent_id. Replies contain scope=telemetry, commands=[], and a bounded report interval; first registration returns a sat_ machine token. No commands, acknowledgements, alternate control transport or update directives are processed. Unsupported delta snapshots request a full report. Additional fields are tolerated. The encrypted ingest token must identify the credential’s space. A missing Redis write returns 503 and does not acknowledge the report. Identity and gzip encodings are accepted, both bounded to 8 MiB. Steady-state reports never write SQLite. Compressed Redis snapshots expire after 300 seconds; last-seen metadata remains.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1748,6 +1797,41 @@
           }
         ],
         "description": "No arbitrary recipient address is accepted. SMTP must be configured to enable delivery."
+      }
+    },
+    "/api/device-options": {
+      "get": {
+        "summary": "List all owned device IDs and names for page selection",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "parameters": []
       }
     }
   }

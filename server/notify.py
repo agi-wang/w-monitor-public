@@ -26,7 +26,7 @@ def main():
             return {"already_running": True}
         now = int(time.time())
         with database() as db:
-            rows = db.execute("SELECT d.id,d.name,d.space_id,s.email FROM devices d JOIN spaces s ON s.id=d.space_id WHERE s.notifications_enabled=1 AND s.email IS NOT NULL LIMIT 512").fetchall()
+            rows = db.execute("SELECT d.id,d.name,d.space_id,s.email FROM devices d JOIN spaces s ON s.id=d.space_id WHERE s.notifications_enabled=1 AND s.email IS NOT NULL").fetchall()
             metadata, available = live_metadata(rows)
             if not available:
                 return {"dynamic_available": False}
