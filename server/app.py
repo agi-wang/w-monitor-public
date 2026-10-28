@@ -725,6 +725,34 @@ def route(db, environ):
     raise Rejected(404, "接口不存在")
 
 
+def download(environ, start_response, path, headers):
+    match = re.fullmatch(r"/downloads/(?:(v[0-9]+\.[0-9]+\.[0-9]+)/)?(version\.txt|install\.sh(?:\.sha256)?|provenance\.jsonl|w-monitor-lite-linux-(?:amd64|arm64)(?:\.sha256)?)", path)
+    if not match:
+        raise Rejected(404, "资源不存在")
+    tag, filename = match.groups()
+    current = Path(__file__).resolve().parents[1]
+    root = current.parent / tag if tag else current
+    file = root / "downloads" / filename
+    if root.is_symlink() or file.is_symlink() or not file.is_file():
+        raise Rejected(404, "资源不存在")
+    stream = file.open("rb")
+    headers = [(key, value) for key, value in headers if key != "Cache-Control"]
+    headers += [("Cache-Control", "public, max-age=31536000, immutable" if tag else "no-cache"), ("Content-Type", "text/plain; charset=utf-8" if filename.endswith((".txt", ".sh", ".sha256", ".jsonl")) else "application/octet-stream"), ("Content-Length", str(os.fstat(stream.fileno()).st_size))]
+    start_response("200 OK", headers)
+    if environ.get("REQUEST_METHOD") == "HEAD":
+        stream.close()
+        return []
+    if "wsgi.file_wrapper" in environ:
+        return environ["wsgi.file_wrapper"](stream, 256 * 1024)
+    def chunks():
+        try:
+            while data := stream.read(256 * 1024):
+                yield data
+        finally:
+            stream.close()
+    return chunks()
+
+
 def application(environ, start_response):
     started = time.perf_counter_ns()
     path = environ.get("PATH_INFO", "/")
@@ -733,6 +761,8 @@ def application(environ, start_response):
     headers = [("Cache-Control", "no-store, private"), ("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "no-referrer"), ("X-Robots-Tag", "noindex, nofollow"), ("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")]
     headers += [("Content-Language", locale), ("Vary", "Accept-Language")]
     try:
+        if method in ("GET", "HEAD") and path.startswith("/downloads/"):
+            return download(environ, start_response, path, headers)
         if len(path) > 512 or len(environ.get("QUERY_STRING", "")) > 8192:
             raise Rejected(414, "请求地址过长")
         if method == "GET" and path.startswith("/manage/"):

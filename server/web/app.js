@@ -212,7 +212,7 @@ function showRecovery(key, rotated = false) {
 function shellQuote(value) { return "'" + value.replaceAll("'", "'\"'\"'") + "'"; }
 function installCommand() {
   if (!bootstrap) return t("点击“生成新的接入凭据”，再复制安装命令。已注册设备不受凭据轮换影响。");
-  return `curl -fsSL --proto '=https' --max-time 30 'https://raw.githubusercontent.com/agi-wang/w-monitor-public/main/install.sh' | bash -s -- --endpoint ${shellQuote(session.ingest_url)} --key ${shellQuote(bootstrap)}`;
+  return `curl -fsSL --proto '=https' --max-time 30 ${shellQuote(location.origin + "/downloads/install.sh")} | bash -s -- --endpoint ${shellQuote(session.ingest_url)} --key ${shellQuote(bootstrap)}`;
 }
 async function copy(value) {
   try { await navigator.clipboard.writeText(value); notice(t("已复制。")); }
@@ -260,7 +260,7 @@ $("generate-bootstrap").onclick = () => run(async () => {
   bootstrap = (await api("/api/bootstrap/rotate", {})).bootstrap_key; $("install-command").value = installCommand(); $("copy-install").disabled = false;
 });
 $("quick-deploy").onclick = () => {
-  $("quick-command").value = `curl -fsSL --proto '=https' --max-time 30 'https://raw.githubusercontent.com/agi-wang/w-monitor-public/main/install.sh' | bash -s -- --public ${shellQuote(location.origin)} --language ${shellQuote(locale)}`;
+  $("quick-command").value = `curl -fsSL --proto '=https' --max-time 30 ${shellQuote(location.origin + "/downloads/install.sh")} | bash -s -- --public ${shellQuote(location.origin)} --language ${shellQuote(locale)}`;
   $("quick-dialog").showModal();
 };
 $("copy-quick").onclick = () => run(() => copy($("quick-command").value));

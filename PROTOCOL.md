@@ -112,3 +112,8 @@ prefixes select either the bootstrap-key index or device-token index; they do no
 authorize requests. Established devices need one indexed lookup and no SQLite
 write. Invalid credentials are rejected before report decompression. Bootstrap
 registration rechecks the key inside its write transaction to serialize revocation.
+
+Public downloads use GET/HEAD `/downloads/[vX.Y.Z/]filename` with a fixed allowlist
+for the installer, Linux amd64/arm64 binaries, SHA-256 inventories, provenance and
+`version.txt`. Versioned responses are immutable. Current aliases revalidate.
+Files stream with bounded buffers and never expose configuration or tenant data.

@@ -156,7 +156,7 @@ Pinned GitHub Actions check main/PRs; a matching `vMAJOR.MINOR.PATCH` tag contai
 in main publishes the Agent binaries, installer and deterministic server ZIP with
 checksums and artifact provenance. Existing release assets are immutable.
 
-The separate `public-production` environment can deploy **only the receiver**:
+The separate `public-production` environment deploys the receiver and its versioned Agent downloads:
 
 - Variables: `PUBLIC_DEPLOY_HOST`, `PUBLIC_DEPLOY_USER`.
 - Secrets: a dedicated `PUBLIC_DEPLOY_KEY` and pinned `PUBLIC_DEPLOY_KNOWN_HOSTS`.
@@ -183,3 +183,16 @@ privately and starts collection. Use `--endpoint https://your-host/api/v1/report
 for a different receiver and `--config /private/path/agent.json` for a custom file.
 The installer checks HTTPS downloads against the release SHA-256 inventory;
 `--verify-provenance` additionally verifies the GitHub attestation using `gh`.
+
+Public installation downloads `/downloads/install.sh`, `/downloads/version.txt`
+and versioned `/downloads/vX.Y.Z/w-monitor-lite-linux-{amd64,arm64}` plus SHA-256
+inventories from the receiver website. `--public https://your-host` creates an
+anonymous space and prints recovery/management/public links in the Agent itself;
+no Python or GitHub CLI is needed on the monitored host. No self-update is scheduled.
+
+Tag CI builds and signs both static binaries, verifies all four published assets,
+and transfers one fixed deployment inventory using the restricted SSH key. The
+receiver, website downloads and installation commands activate together. The
+dedicated account Cron refreshes cached platform load and optional notifications
+every minute using the active release. CI never receives the tenant database or
+application encryption/SMTP credentials.

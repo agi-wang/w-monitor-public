@@ -97,10 +97,25 @@ def deploy():
         active_tag = active.get("tag", "")
         if active_tag and tuple(map(int, tag[1:].split("."))) < tuple(map(int, active_tag[1:].split("."))):
             raise RuntimeError("Automatic deployments cannot downgrade an active release")
-        raw = sys.stdin.buffer.read(8 * 1024 * 1024 + 1)
-        if len(raw) > 8 * 1024 * 1024 or hashlib.sha256(raw).hexdigest() != checksum:
+        raw = sys.stdin.buffer.read(192 * 1024 * 1024 + 1)
+        if len(raw) > 192 * 1024 * 1024 or hashlib.sha256(raw).hexdigest() != checksum:
             raise RuntimeError("Archive size or checksum mismatch")
-        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        # CI verifies provenance before sending this exact, bounded inventory.
+        assets = {"w-monitor-lite-linux-amd64", "w-monitor-lite-linux-arm64", "install.sh", "w-monitor-public-server.zip"}
+        inventory = assets | {name + ".sha256" for name in assets} | {"provenance.jsonl"}
+        with zipfile.ZipFile(io.BytesIO(raw)) as delivery:
+            entries = delivery.infolist()
+            if len(entries) != len(inventory) or {item.filename for item in entries} != inventory or any(item.file_size > 64 * 1024 * 1024 or stat.S_ISLNK(item.external_attr >> 16) for item in entries):
+                raise RuntimeError("Unexpected deployment assets")
+            downloads = {name: delivery.read(name) for name in inventory}
+        for name in assets:
+            expected = hashlib.sha256(downloads[name]).hexdigest() + "  " + name
+            if downloads[name + ".sha256"].decode().strip() != expected:
+                raise RuntimeError("Asset checksum mismatch")
+        server_archive = downloads.pop("w-monitor-public-server.zip")
+        downloads.pop("w-monitor-public-server.zip.sha256")
+        downloads["version.txt"] = (tag + "\n").encode()
+        with zipfile.ZipFile(io.BytesIO(server_archive)) as archive:
             entries = archive.infolist()
             if len(entries) != len(EXPECTED) + 1 or {entry.filename for entry in entries} != EXPECTED | {"manifest.json"} or any(entry.file_size > 4 * 1024 * 1024 or stat.S_ISLNK(entry.external_attr >> 16) for entry in entries):
                 raise RuntimeError("Unexpected release inventory")
@@ -135,6 +150,11 @@ def deploy():
                     # UID. Only public source is readable; private data stays 0700.
                     path.parent.chmod(0o755)
                     atomic(path, data, 0o644)
+                download_root = staging / "downloads"
+                download_root.mkdir(mode=0o755)
+                download_root.chmod(0o755)
+                for name, data in downloads.items():
+                    atomic(download_root / name, data, 0o644)
                 subprocess.run([python, "-m", "venv", str(staging / "runtime")], check=True, timeout=45, stdout=subprocess.DEVNULL)
                 subprocess.run([str(staging / "runtime/bin/python"), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--require-hashes", "--only-binary=:all:", "--index-url", "https://pypi.org/simple", "--retries", "2", "--timeout", "10", "-r", str(staging / "server/requirements.lock")], check=True, timeout=150, stdout=subprocess.DEVNULL)
                 atomic(staging / "archive.sha256", (checksum + "\n").encode())
@@ -153,6 +173,16 @@ def deploy():
             raise RuntimeError("Candidate health failed; prior hosting configuration restored")
         previous_tag = active_tag if active_tag and active_tag != tag else active.get("previous_tag")
         atomic(active_path, json.dumps({"tag": tag, "sha256": checksum, "previous_tag": previous_tag}).encode())
+        periodic = PRIVATE / "run_periodic.py"
+        if not periodic.is_file() or periodic.is_symlink():
+            raise RuntimeError("Trusted periodic entrypoint missing")
+        previous_cron = subprocess.run(["crontab", "-l"], capture_output=True, text=True, timeout=10)
+        if previous_cron.returncode not in (0, 1):
+            raise RuntimeError("Cannot read account crontab")
+        lines = [line for line in previous_cron.stdout.splitlines() if not line.endswith("# w-monitor-public")]
+        lines.append(f"* * * * * {python} {periodic} >> {PRIVATE}/periodic.log 2>&1 # w-monitor-public")
+        subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n", text=True, check=True, timeout=10)
+        subprocess.run([python, str(periodic)], check=True, timeout=60, stdout=subprocess.DEVNULL)
         # Retain active and one preceding immutable release. Application data and
         # configuration are outside this directory and never touched here.
         candidates = sorted((path for path in releases.iterdir() if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", path.name) and path.is_dir() and not path.is_symlink()), key=lambda path: tuple(map(int, path.name[1:].split("."))), reverse=True)

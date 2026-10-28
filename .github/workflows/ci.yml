@@ -141,7 +141,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/') && github.repository == 'agi-wang/w-monitor-public'
     needs: release
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     environment: public-production
     concurrency:
       group: public-receiver-production
@@ -168,16 +168,20 @@ jobs:
           temporary=$(mktemp -d)
           trap 'rm -rf -- "$temporary"' EXIT
           chmod 700 "$temporary"
-          gh release download "$RELEASE_TAG" --repo "$GH_REPO" --dir "$temporary" \
-            --pattern w-monitor-public-server.zip --pattern w-monitor-public-server.zip.sha256 --pattern provenance.jsonl
-          (cd "$temporary" && sha256sum -c w-monitor-public-server.zip.sha256)
-          gh attestation verify "$temporary/w-monitor-public-server.zip" --bundle "$temporary/provenance.jsonl" \
-            --repo "$GH_REPO" --source-ref "refs/tags/$RELEASE_TAG" --signer-workflow "$GH_REPO/.github/workflows/ci.yml"
-          sha=$(cut -d' ' -f1 "$temporary/w-monitor-public-server.zip.sha256")
+          mkdir "$temporary/assets"
+          gh release download "$RELEASE_TAG" --repo "$GH_REPO" --dir "$temporary/assets"
+          test "$(find "$temporary/assets" -maxdepth 1 -type f | wc -l)" -eq 9
+          for asset in w-monitor-public-server.zip w-monitor-lite-linux-amd64 w-monitor-lite-linux-arm64 install.sh; do
+            (cd "$temporary/assets" && sha256sum -c "$asset.sha256")
+            gh attestation verify "$temporary/assets/$asset" --bundle "$temporary/assets/provenance.jsonl" \
+              --repo "$GH_REPO" --source-ref "refs/tags/$RELEASE_TAG" --signer-workflow "$GH_REPO/.github/workflows/ci.yml"
+          done
+          (cd "$temporary/assets" && zip -q -0 "$temporary/delivery.zip" ./*)
+          sha=$(sha256sum "$temporary/delivery.zip" | cut -d' ' -f1)
           [[ "$sha" =~ ^[a-f0-9]{64}$ ]]
           umask 077
           printf '%s\n' "$DEPLOY_KEY" > "$temporary/identity"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$temporary/known_hosts"
           ssh -i "$temporary/identity" -o BatchMode=yes -o ConnectTimeout=10 \
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$temporary/known_hosts" \
-            "$DEPLOY_USER@$DEPLOY_HOST" "deploy $RELEASE_TAG $sha" < "$temporary/w-monitor-public-server.zip"
+            "$DEPLOY_USER@$DEPLOY_HOST" "deploy $RELEASE_TAG $sha" < "$temporary/delivery.zip"
