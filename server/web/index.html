@@ -20,7 +20,7 @@
       <div class="eyebrow">W MONITOR / PUBLIC</div>
       <h1>你的设备，<br>一个私密空间。</h1>
       <p class="intro">从一台主机开始，集中查看运行状态。可以保持匿名，也可以在登录后领用空间。</p>
-      <div class="welcome-actions"><button id="create-space" class="button primary">新建监控空间 <span aria-hidden="true">↗</span></button><button id="show-restore" class="button">使用恢复口令</button></div>
+      <div class="welcome-actions"><button id="quick-deploy" class="button primary">一键部署单台设备 <span aria-hidden="true">↗</span></button><button id="create-space" class="button">新建监控空间 <span aria-hidden="true">↗</span></button><button id="show-restore" class="button">使用恢复口令</button></div>
       <div class="principles"><div><span>01</span><strong>接入设备</strong><p>运行公开源码的 Lite Agent，采集系统权限允许的只读数据。</p></div><div><span>02</span><strong>保存口令</strong><p>换浏览器或电脑，用私密恢复口令找回同一组设备。</p></div><div><span>03</span><strong>按需分享</strong><p>选择设备创建多个只读页面，随时停用或更换链接。</p></div></div>
     </section>
     <section id="dashboard" hidden>
@@ -35,6 +35,7 @@
     <div id="loading" class="empty">正在读取监控空间…</div>
   </main>
   <footer><span>只读采集 · 无远程控制 · Agent 仅手动更新</span><a href="https://github.com/agi-wang/w-monitor-public" target="_blank" rel="noopener noreferrer">查看开源代码 ↗</a></footer>
+  <dialog id="quick-dialog"><div class="dialog-heading"><h2>一键部署单台设备</h2><button class="close" data-close="quick-dialog" aria-label="关闭">×</button></div><p class="subtle">在目标 Linux 设备执行下方命令。安装器验证发布来源后，会创建匿名空间和公开页，在终端打印私密恢复 Key 与访问地址，并启动 Lite Agent。</p><label>部署命令<textarea id="quick-command" rows="5" readonly spellcheck="false"></textarea></label><button id="copy-quick" class="button primary">复制命令</button><p class="subtle">此流程会自动公开首台设备的名称、状态和基础资源占用。完整采集数据保持私有；恢复 Key 请勿分享。需预先安装 curl、Python 3 和 GitHub CLI，更新仍须手动执行。</p></dialog>
   <dialog id="restore-dialog"><form id="restore-form"><div class="dialog-heading"><h2>恢复监控空间</h2><button type="button" class="close" data-close="restore-dialog" aria-label="关闭">×</button></div><p class="subtle">输入此前保存的私密口令。恢复后，设备会归入同一空间。</p><label>恢复口令<input id="restore-key" type="password" autocomplete="off" spellcheck="false" required maxlength="68" placeholder="wmr_…"></label><button class="button primary" type="submit">恢复空间</button></form></dialog>
   <dialog id="recovery-dialog"><div class="dialog-heading"><h2>保存新的恢复口令</h2></div><p id="recovery-explanation" class="subtle">只显示这一次。保存后，你可以跨浏览器找回这个空间。</p><label>私密恢复口令<textarea id="recovery-key" rows="3" readonly spellcheck="false"></textarea></label><div class="actions"><button id="copy-recovery" class="button">复制口令</button><button id="saved-recovery" class="button primary">已保存，进入空间</button></div></dialog>
   <dialog id="install-dialog"><div class="dialog-heading"><h2>接入一台设备</h2><button class="close" data-close="install-dialog" aria-label="关闭">×</button></div><p class="subtle">Linux AMD64 / ARM64。先安装 curl、Python 3 和 GitHub CLI；安装器会验证发布来源。请以你允许进行采集的系统用户运行。</p><label>安装与启动命令<textarea id="install-command" rows="7" readonly spellcheck="false"></textarea></label><div class="actions"><button id="generate-bootstrap" class="button">生成新的接入凭据</button><button id="copy-install" class="button primary">复制命令</button></div><p class="subtle">命令含私密接入凭据，请勿公开。轮换接入凭据不影响已注册设备；Agent 保持前台运行，更新须在本机手动执行。</p></dialog>

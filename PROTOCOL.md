@@ -43,6 +43,13 @@ notifications retain the locale selected when the user binds/saves settings.
 `GET /api/session` issues a Secure, HttpOnly, SameSite=Lax session cookie and CSRF
 token. Space create/restore works anonymously; the private recovery key is 256-bit
 random material and stored only as a digest. Keep the returned value privately.
+`POST /api/spaces/create` may explicitly request `auto_public_page: true`. It
+returns the additional `ingest_url`, `manage_url` and `status_url` fields. The
+page starts empty and selects only the first successfully registered real device
+in the registration transaction; it does not publish subsequent devices. This
+supports the homepage's manual one-command bootstrap, which prints the recovery
+key and starts the local Agent after release verification.
+
 Normal OAuth login can claim a space; claiming/rotating recovery revokes other
 sessions and rotates the registration key. Existing device tokens remain valid.
 
@@ -69,7 +76,9 @@ SQLite holds only durable identity/ownership/credential/page/contact/outbox stat
 Raw snapshots are compressed before encryption and expire five minutes after their
 last update; last-seen metrics remain until the device is removed. View caches have
 fixed scope/page keys with short expiry and bounded working memory. Responses use
-ETag/If-None-Match after authorization, returning 304 when unchanged.
+ETag/If-None-Match after authorization, returning 304 when unchanged. Shared
+snapshots refresh at five-second boundaries rather than invalidating every page
+for every report; access changes and publication are checked on every request.
 An absent last report yields `online: null`; unavailable or absent Redis data never
 becomes an inferred host outage. Offline percentages are null. Reporting deadlines
 use server receive time and the configured interval. Browser polling defaults to

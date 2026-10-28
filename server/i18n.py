@@ -3,6 +3,13 @@ import html
 import re
 
 EN = {
+    '无效部署设置': 'Invalid deployment settings',
+    '一键部署单台设备': 'One-command device setup',
+    '一键部署单台设备 ': 'One-command device setup ',
+    '部署命令': 'Setup command',
+    '在目标 Linux 设备执行下方命令。安装器验证发布来源后，会创建匿名空间和公开页，在终端打印私密恢复 Key 与访问地址，并启动 Lite Agent。': 'Run this command on your Linux device. After verifying the release, the installer creates an anonymous space and public page, prints your private recovery key and URLs, and starts the Lite Agent.',
+    '此流程会自动公开首台设备的名称、状态和基础资源占用。完整采集数据保持私有；恢复 Key 请勿分享。需预先安装 curl、Python 3 和 GitHub CLI，更新仍须手动执行。': 'This flow publishes the first device’s name, status and basic resource usage. Full reports stay private; keep the recovery key secret. Install curl, Python 3 and GitHub CLI first. Updates remain manual.',
+
     '无效页码': 'Invalid page number',
     '上一页': 'Previous',
     '下一页': 'Next',

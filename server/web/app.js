@@ -260,6 +260,11 @@ $("generate-bootstrap").onclick = () => run(async () => {
   if (bootstrap && !confirm(t("生成新凭据后，旧接入命令将不能注册新设备。已注册设备不受影响。"))) return;
   bootstrap = (await api("/api/bootstrap/rotate", {})).bootstrap_key; $("install-command").value = installCommand(); $("copy-install").disabled = false;
 });
+$("quick-deploy").onclick = () => {
+  $("quick-command").value = `curl -fsSL --proto '=https' --max-time 30 'https://raw.githubusercontent.com/agi-wang/w-monitor-public/main/install.sh' | bash -s -- --public ${shellQuote(location.origin)} --language ${shellQuote(locale)}`;
+  $("quick-dialog").showModal();
+};
+$("copy-quick").onclick = () => run(() => copy($("quick-command").value));
 $("copy-install").onclick = () => run(() => copy($("install-command").value));
 $("new-page").onclick = () => run(() => openPage());
 $("bind-email").onclick = () => run(async () => { await api("/api/email/bind", { enabled: true }); await refreshEmail(); notice(t("已绑定验证过的邮箱，并开启通知。")); });

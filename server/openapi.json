@@ -282,6 +282,10 @@
                   "title": {
                     "type": "string",
                     "maxLength": 80
+                  },
+                  "auto_public_page": {
+                    "type": "boolean",
+                    "default": false
                   }
                 }
               }
@@ -306,7 +310,8 @@
               "format": "uri"
             }
           }
-        ]
+        ],
+        "description": " Optional auto_public_page=true creates an empty public page and returns ingest_url/manage_url/status_url. Only the first real registered device is selected automatically; later devices remain private until explicitly selected."
       }
     },
     "/api/spaces/restore": {

@@ -107,7 +107,7 @@ with database() as _db:
       bootstrap_hash TEXT UNIQUE NOT NULL, owner TEXT, created_at INTEGER NOT NULL,
       revision INTEGER NOT NULL DEFAULT 0, channel TEXT NOT NULL,
       email TEXT, notifications_enabled INTEGER NOT NULL DEFAULT 0,
-      notification_locale TEXT NOT NULL DEFAULT 'en');
+      notification_locale TEXT NOT NULL DEFAULT 'en', auto_page TEXT);
     CREATE INDEX IF NOT EXISTS space_owner ON spaces(owner);
     CREATE TABLE IF NOT EXISTS sessions(
       hash TEXT PRIMARY KEY, csrf TEXT NOT NULL, space_id TEXT REFERENCES spaces(id),
@@ -316,7 +316,10 @@ def snapshot(db, space=None, slug=None, number=0):
         selection = None
     key = NAMESPACE + "view:" + ("public:" if slug else "space:") + scope + ":" + str(number)
     cached_view = CACHE.read_view(DYNAMIC, key, space_id)
-    fingerprint = digest(json.dumps([revision, cached_view[:2] if cached_view else None, title, selection, int(time.time()) // 5]))
+    # A five-second shared snapshot matches browser refresh cadence. Per-report
+    # invalidation would rebuild every page of a large fleet dozens of times a
+    # second. Ownership/revocation/publication still come from SQLite each read.
+    fingerprint = digest(json.dumps([revision, cached_view[:1] if cached_view else None, title, selection, int(time.time()) // 5]))
     if cached_view and cached_view[2]:
         try:
             cached = BOX.open("view:" + digest(key), json.loads(cached_view[2]))
@@ -378,6 +381,11 @@ def receive(db, environ, expected_space):
     token_hash = digest(machine_token) if machine_token else machine["token_hash"]
     if not machine:
         db.execute("INSERT INTO devices VALUES(?,?,?,?,?,?) ON CONFLICT(space_id,agent_id) DO UPDATE SET token_hash=excluded.token_hash", (device_id, space_id, agent, token_hash, name, int(time.time())))
+        if space["auto_page"]:
+            # Explicit one-click setup publishes only its first real device.
+            # Later registrations never add devices to this page automatically.
+            db.execute("UPDATE pages SET selection=? WHERE id=? AND space_id=? AND enabled=1", (json.dumps([device_id]), space["auto_page"], space_id))
+            db.execute("UPDATE spaces SET auto_page=NULL WHERE id=?", (space_id,))
     metadata = {"name": name, "received_at": int(time.time()), "cpu": percent(cpu.get("usage_percent", cpu.get("usage"))), "memory": percent(memory.get("usage_percent")), "disk": percent(disk.get("usage_percent"))}
     stored = CACHE.store_report(DYNAMIC, device_id, space_id, BOX.seal_report("report:" + device_id, report), BOX.seal("metrics:" + device_id, metadata), secrets.token_hex(16))
     if stored != 1:
@@ -554,14 +562,25 @@ def route(db, environ):
     if path == "/api/spaces/create":
         limited("create:" + environ.get("REMOTE_ADDR", ""), 5, 3600)
         title = value.get("title", translate("我的监控空间", locale))
+        automatic = value.get("auto_public_page", False)
+        if type(automatic) is not bool:
+            raise Rejected(400, "无效部署设置")
         if not isinstance(title, str) or not 1 <= len(title.strip()) <= 80:
             raise Rejected(400, "空间名称需要 1–80 个字符")
         recovery, bootstrap, space_id = secret("wmr_"), secret("wmb_"), secrets.token_hex(16)
         begin_browser_write(db, session)
-        db.execute("INSERT INTO spaces(id,title,recovery_hash,bootstrap_hash,owner,created_at,channel) VALUES(?,?,?,?,?,?,?)", (space_id, title.strip(), digest(recovery), digest(bootstrap), session["subject"], int(time.time()), BOX.seal("ingest", {"id": space_id})))
+        channel = BOX.seal("ingest", {"id": space_id})
+        db.execute("INSERT INTO spaces(id,title,recovery_hash,bootstrap_hash,owner,created_at,channel) VALUES(?,?,?,?,?,?,?)", (space_id, title.strip(), digest(recovery), digest(bootstrap), session["subject"], int(time.time()), channel))
+        result = {"recovery": recovery, "bootstrap_key": bootstrap}
+        if automatic:
+            page_id = secrets.token_hex(16)
+            slug = BOX.seal("public", {"id": page_id})
+            db.execute("INSERT INTO pages VALUES(?,?,?,?,?,?,?)", (page_id, space_id, digest(slug), BOX.seal("stored-link:" + page_id, slug), title.strip(), 1, "[]"))
+            db.execute("UPDATE spaces SET auto_page=? WHERE id=?", (page_id, space_id))
+            result.update({"status_url": ORIGIN + "/status/" + slug, "manage_url": ORIGIN + "/manage/" + BOX.seal("manage", {"id": space_id}), "ingest_url": ORIGIN + "/ingest/" + channel})
         db.execute("UPDATE sessions SET space_id=? WHERE hash=?", (space_id, session["hash"]))
         db.commit()
-        return 200, {"recovery": recovery, "bootstrap_key": bootstrap}, headers
+        return 200, result, headers
     if path == "/api/spaces/restore":
         limited("restore:" + environ.get("REMOTE_ADDR", ""), 10, 60)
         recovery = value.get("recovery", "")

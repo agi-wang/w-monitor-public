@@ -10,6 +10,18 @@ optional normal OAuth login can claim a space; login never grants host control.
 Create several public pages, each with your own selection of devices. Visitors see
 only names, online status and CPU/memory/disk percentages. Full reports stay private.
 
+## One-command setup
+
+The homepage offers **One-command device setup**. Copy its command to a Linux
+host with curl, Python 3 and GitHub CLI installed. `install.sh --public ORIGIN`
+verifies the Agent release, creates a new anonymous space and status page, writes
+an owner-only config, prints the private recovery key and management/public URLs,
+and starts the Agent in the foreground. The first real report selects that device
+for the page; later devices are never published automatically. Existing Agent
+configs are not overwritten. Save the printed key; use it to restore and optionally
+claim the space in your browser. This explicit setup option starts the local Agent;
+ordinary installation remains installation-only and all updates remain manual.
+
 ## Lite Agent
 
 The Agent collects CPU, memory, disks, network, processes, GPU/container/service
