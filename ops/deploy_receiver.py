@@ -176,18 +176,10 @@ def deploy():
         periodic = PRIVATE / "run_periodic.py"
         if not periodic.is_file() or periodic.is_symlink():
             raise RuntimeError("Trusted periodic entrypoint missing")
-        previous_cron = subprocess.run(["crontab", "-l"], capture_output=True, text=True, timeout=10)
-        if previous_cron.returncode not in (0, 1):
-            raise RuntimeError("Cannot read account crontab")
-        lines = [line for line in previous_cron.stdout.splitlines() if not line.endswith("# w-monitor-public")]
-        lines.append(f"* * * * * {python} {periodic} >> {PRIVATE}/periodic.log 2>&1 # w-monitor-public")
-        # CageFS crontab accepts a private file, but rejects stdin "-".
-        cron_input = PRIVATE / (".cron-" + secrets.token_hex(16))
-        try:
-            atomic(cron_input, ("\n".join(lines) + "\n").encode())
-            subprocess.run(["crontab", str(cron_input)], check=True, timeout=10)
-        finally:
-            cron_input.unlink(missing_ok=True)
+        # Cron is account infrastructure provisioned through DirectAdmin.
+        # Its stable wrapper selects active-release.json after every CI deploy.
+        if config.get("periodic_enabled") is not True:
+            raise RuntimeError("DirectAdmin periodic worker must be provisioned")
         subprocess.run([python, str(periodic)], check=True, timeout=60, stdout=subprocess.DEVNULL)
         # Retain active and one preceding immutable release. Application data and
         # configuration are outside this directory and never touched here.

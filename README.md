@@ -196,3 +196,9 @@ receiver, website downloads and installation commands activate together. The
 dedicated account Cron refreshes cached platform load and optional notifications
 every minute using the active release. CI never receives the tenant database or
 application encryption/SMTP credentials.
+
+On HostBrr, provision account Cron through DirectAdmin's `CMD_API_CRON_JOBS` API
+(or panel) once, then set `periodic_enabled: true` in private deploy-config.json.
+Run the stable `ops/run_periodic.py` entrypoint every minute. The forced SSH
+environment cannot install Cron reliably; releases reuse the account Cron and
+automatically select the newly activated version.
