@@ -1507,61 +1507,6 @@
         ]
       }
     },
-    "/ingest/{token}": {
-      "post": {
-        "summary": "Ingest one full v1.0 telemetry report",
-        "security": [
-          {
-            "ReportBearer": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success; privileged data and status reads are no-store"
-          },
-          "400": {
-            "description": "Invalid bounded request"
-          },
-          "401": {
-            "description": "Missing/expired credential or invalid recovery key"
-          },
-          "403": {
-            "description": "Origin/CSRF/space ownership denied"
-          },
-          "429": {
-            "description": "Rate, storage or connection quota exhausted"
-          },
-          "503": {
-            "description": "Storage or deployment configuration unavailable"
-          },
-          "404": {
-            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
-          }
-        },
-        "description": "Maximum decoded UTF-8 JSON body: 8 MiB. Authorization: Bearer bootstrap or bound machine token. Machine tokens are bound to one space and agent_id. Replies contain scope=telemetry, commands=[], and a bounded report interval; first registration returns a sat_ machine token. No commands, acknowledgements, alternate control transport or update directives are processed. Unsupported delta snapshots request a full report. Additional fields are tolerated. The encrypted ingest token must identify the credential’s space. A missing Redis write returns 503 and does not acknowledge the report. Identity and gzip encodings are accepted, both bounded to 8 MiB. Steady-state reports never write SQLite. Compressed Redis snapshots expire after 300 seconds; last-seen metadata remains.",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/Report"
-              }
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^wm1_[A-Za-z0-9_-]{40,320}$"
-            }
-          }
-        ]
-      }
-    },
     "/api/email": {
       "get": {
         "summary": "Read bound verified email and delivery availability",
@@ -1867,6 +1812,50 @@
           }
         },
         "description": "No tenant identifiers or reports. Missing/stale snapshots return available=false. Request rate, mean processing time and 5xx rate use the previous complete minute. Host load has shared_host scope, not account CPU usage. Numeric metrics are null when no sample exists."
+      }
+    },
+    "/api/v1/report": {
+      "post": {
+        "summary": "Ingest one full v1.0 telemetry report",
+        "security": [
+          {
+            "ReportBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "description": "Maximum decoded UTF-8 JSON body: 8 MiB. Authorization: Bearer bootstrap or bound machine token. Machine tokens are bound to one space and agent_id. Replies contain scope=telemetry, commands=[], and a bounded report interval; first registration returns a sat_ machine token. No commands, acknowledgements, alternate control transport or update directives are processed. Unsupported delta snapshots request a full report. Additional fields are tolerated. The fixed endpoint routes reports solely by the hashed Bearer credential; URLs never contain tenant credentials. A missing Redis write returns 503 and does not acknowledge the report. Identity and gzip encodings are accepted, both bounded to 8 MiB. Steady-state reports never write SQLite. Compressed Redis snapshots expire after 300 seconds; last-seen metadata remains.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Report"
+              }
+            }
+          }
+        }
       }
     }
   }

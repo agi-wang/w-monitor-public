@@ -6,8 +6,9 @@ server dependency or host-control transport. Unknown report fields are tolerated
 
 ## Lite → receiver
 
-Send UTF-8 JSON (identity or gzip Content-Encoding) over HTTPS to the space-issued `/ingest/{encrypted-token}` with
+Send UTF-8 JSON (identity or gzip Content-Encoding) over HTTPS to the common `/api/v1/report` endpoint with
 `Authorization: Bearer <bootstrap-or-device-token>`. Maximum wire and decoded body: 8 MiB.
+The hashed Bearer credential identifies the space and device; the endpoint is identical for all tenants.
 Required fields: `version: "1.0"`, nonempty bounded `agent_id`, object `collectors`.
 Optional `hostname` supplies the display name. Collector values may be direct
 objects or `{ "data": {...} }` wrappers; full reports remain visible only to the

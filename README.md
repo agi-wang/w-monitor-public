@@ -74,7 +74,7 @@ notifications remember the browser language when email settings are saved.
   telemetry snapshots. Steady-state reports do not write SQLite.
 - SQLite persists monitoring spaces, hashed credentials, ownership, page choices,
   encrypted email contacts, consent and the bounded notification outbox.
-- AES-256-GCM from PyCA encrypts purpose-bound public, management and ingest
+- AES-256-GCM from PyCA encrypts purpose-bound public and management
   addresses, stored links, email contacts and Redis payloads. HTTPS is still required.
 - A management address alone does not authorize access: a current session or
   recovery key is required. Browser changes additionally require Origin and CSRF
@@ -174,3 +174,12 @@ receiver code; protect repository/tag access and the deployment environment.
 **This server deployment workflow never updates installed Agents.**
 
 See [PROTOCOL.md](PROTOCOL.md) and [OpenAPI](server/openapi.json) for the contract.
+
+All Public devices use the fixed `https://monitor.20290708.xyz/api/v1/report`
+endpoint with `Authorization: Bearer <key>`. The registration key identifies the
+space; the server exchanges it for a device-bound token on first report.
+With the new binary, `w-monitor-lite --key <registration-key>` saves configuration
+privately and starts collection. Use `--endpoint https://your-host/api/v1/report`
+for a different receiver and `--config /private/path/agent.json` for a custom file.
+The installer checks HTTPS downloads against the release SHA-256 inventory;
+`--verify-provenance` additionally verifies the GitHub attestation using `gh`.

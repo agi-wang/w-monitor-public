@@ -341,7 +341,7 @@ def snapshot(db, space=None, slug=None, number=0):
     return payload
 
 
-def receive(db, environ, expected_space):
+def receive(db, environ):
     limited("report:" + environ.get("REMOTE_ADDR", ""), 3000, 60)
     auth = environ.get("HTTP_AUTHORIZATION", "")
     if not auth.startswith("Bearer ") or len(auth) > 256:
@@ -364,8 +364,6 @@ def receive(db, environ, expected_space):
     if not machine and not space:
         raise Rejected(401, "上报凭据无效或已吊销")
     space_id = machine["space_id"] if machine else space["id"]
-    if space_id != expected_space:
-        raise Rejected(403, "接入地址与设备凭据不匹配")
     # Stable per-device staggering spreads a fleet's subsequent reports without
     # adding an Agent update/control mechanism.
     interval = max(10000, min(300000, INTERVAL + int(digest(agent)[:8], 16) % max(1, INTERVAL // 5) - INTERVAL // 10))
@@ -489,15 +487,15 @@ def route(db, environ):
             except (ValueError, TypeError, KeyError):
                 pass
         return 200, {"available": False}, []
-    if method == "POST" and re.fullmatch(r"/ingest/" + LINK, path):
-        return 200, receive(db, environ, link_payload("ingest", path.rsplit("/", 1)[1])), []
+    if method == "POST" and path == "/api/v1/report":
+        return 200, receive(db, environ), []
     if method == "GET" and re.fullmatch(r"/api/public/status/" + LINK, path):
         return 200, snapshot(db, slug=path.rsplit("/", 1)[1], number=page_number(environ)), []
     session, headers = browser_session(db, environ, create=path == "/api/session" and method == "GET")
     if method == "GET" and path == "/api/session":
         space = db.execute("SELECT * FROM spaces WHERE id=?", (session["space_id"],)).fetchone()
         owned = db.execute("SELECT * FROM spaces WHERE owner=? ORDER BY created_at", (session["subject"],)).fetchall() if session["subject"] else []
-        return 200, {"csrf": session["csrf"], "space": space_summary(space) if space else None, "manage_token": BOX.seal("manage", {"id": space["id"]}) if space else None, "ingest_url": ORIGIN + "/ingest/" + space["channel"] if space else None, "spaces": [space_summary(row) for row in owned], "login": {"available": bool(ISSUER and CONFIG.get("oidc_client_id") and CONFIG.get("oidc_client_secret")), "authenticated": bool(session["subject"]), "label": session["label"]}}, headers
+        return 200, {"csrf": session["csrf"], "space": space_summary(space) if space else None, "manage_token": BOX.seal("manage", {"id": space["id"]}) if space else None, "ingest_url": ORIGIN + "/api/v1/report" if space else None, "spaces": [space_summary(row) for row in owned], "login": {"available": bool(ISSUER and CONFIG.get("oidc_client_id") and CONFIG.get("oidc_client_secret")), "authenticated": bool(session["subject"]), "label": session["label"]}}, headers
     if method == "GET" and path == "/auth/callback":
         query = parse_qs(environ.get("QUERY_STRING", ""))
         state, code = query.get("state", [""])[0], query.get("code", [""])[0]
@@ -581,7 +579,7 @@ def route(db, environ):
             raise Rejected(400, "空间名称需要 1–80 个字符")
         recovery, bootstrap, space_id = secret("wmr_"), secret("wmb_"), secrets.token_hex(16)
         begin_browser_write(db, session)
-        channel = BOX.seal("ingest", {"id": space_id})
+        channel = ""  # Retained storage column for existing databases; no ingest links.
         db.execute("INSERT INTO spaces(id,title,recovery_hash,bootstrap_hash,owner,created_at,channel) VALUES(?,?,?,?,?,?,?)", (space_id, title.strip(), digest(recovery), digest(bootstrap), session["subject"], int(time.time()), channel))
         result = {"recovery": recovery, "bootstrap_key": bootstrap}
         if automatic:
@@ -589,7 +587,7 @@ def route(db, environ):
             slug = BOX.seal("public", {"id": page_id})
             db.execute("INSERT INTO pages VALUES(?,?,?,?,?,?,?)", (page_id, space_id, digest(slug), BOX.seal("stored-link:" + page_id, slug), title.strip(), 1, "[]"))
             db.execute("UPDATE spaces SET auto_page=? WHERE id=?", (page_id, space_id))
-            result.update({"status_url": ORIGIN + "/status/" + slug, "manage_url": ORIGIN + "/manage/" + BOX.seal("manage", {"id": space_id}), "ingest_url": ORIGIN + "/ingest/" + channel})
+            result.update({"status_url": ORIGIN + "/status/" + slug, "manage_url": ORIGIN + "/manage/" + BOX.seal("manage", {"id": space_id}), "ingest_url": ORIGIN + "/api/v1/report"})
         db.execute("UPDATE sessions SET space_id=? WHERE hash=?", (space_id, session["hash"]))
         db.commit()
         return 200, result, headers
@@ -765,7 +763,7 @@ def application(environ, start_response):
         # Never log request bodies, bearer tokens, recovery phrases or OAuth data.
         print("W Monitor Public: request rejected by internal validation", file=environ.get("wsgi.errors", __import__("sys").stderr))
         status, payload, extra, content = 500, json.dumps({"error": translate("无法处理此请求", locale)}, ensure_ascii=False).encode(), [], "application/json; charset=utf-8"
-    if (path.startswith("/api/") or path.startswith("/ingest/")) and path != "/api/platform-load":
+    if path.startswith("/api/") and path != "/api/platform-load":
         CACHE.record_request(NAMESPACE, status, (time.perf_counter_ns() - started) // 1000)
     start_response(f"{status} {HTTPStatus(status).phrase}", headers + extra + [("Content-Type", content), ("Content-Length", str(len(payload)))])
     return [payload]

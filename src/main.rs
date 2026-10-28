@@ -39,11 +39,24 @@ const MAX_RESPONSE: usize = 1024 * 1024;
 )]
 struct Args {
     /// Owner-only JSON config; contains endpoint_url, auth_token and optional agent_id/interval.
-    #[arg(long)]
+    #[arg(long, default_value_os_t = default_config_path())]
     config: PathBuf,
+    /// Fixed receiver URL. Used with --key to configure this device.
+    #[arg(long, default_value = "https://monitor.20290708.xyz/api/v1/report")]
+    endpoint: String,
+    /// Registration credential; saved privately before starting collection.
+    #[arg(long)]
+    key: Option<String>,
     /// Explicitly permit loopback HTTP for local development only.
     #[arg(long)]
     allow_local_http: bool,
+}
+
+fn default_config_path() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config/w-monitor-public/agent.json")
 }
 
 fn read_config(path: &Path) -> Result<Value> {
@@ -78,6 +91,10 @@ fn persist_config(path: &Path, expected: &str, next: &str, id: &str) -> Result<(
     }
     value["auth_token"] = json!(next);
     value["agent_id"] = json!(id);
+    write_config(path, &value)
+}
+
+fn write_config(path: &Path, value: &Value) -> Result<()> {
     let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     let mut file = OpenOptions::new()
         .write(true)
@@ -149,6 +166,55 @@ async fn main() -> Result<()> {
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
+    if let Some(key) = &args.key {
+        if key.is_empty() || key.len() > 512 || key.chars().any(char::is_control) {
+            bail!("Invalid registration key");
+        }
+        let endpoint = url::Url::parse(&args.endpoint)?;
+        let local_http = args.allow_local_http
+            && endpoint.scheme() == "http"
+            && matches!(
+                endpoint.host_str(),
+                Some("127.0.0.1" | "[::1]" | "localhost")
+            );
+        if !(endpoint.scheme() == "https" || local_http)
+            || endpoint.host_str().is_none()
+            || !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+        {
+            bail!("Endpoint requires HTTPS without credentials, query or fragment");
+        }
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
+        let metadata = std::fs::symlink_metadata(parent)?;
+        if !metadata.is_dir()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o077 != 0
+        {
+            bail!("Config directory must be owned by the current user with mode 0700");
+        }
+        let mut value = match std::fs::symlink_metadata(&args.config) {
+            Ok(_) => read_config(&args.config)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
+            Err(error) => return Err(error.into()),
+        };
+        value["endpoint_url"] = json!(args.endpoint);
+        value["auth_token"] = json!(key);
+        value["compress_reports"] = json!(true);
+        write_config(&args.config, &value)?;
+        // Remove the registration key from the long-running process arguments.
+        use std::os::unix::process::CommandExt;
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command.arg("--config").arg(&args.config);
+        if args.allow_local_http {
+            command.arg("--allow-local-http");
+        }
+        return Err(command.exec().into());
+    }
     let parent_metadata = std::fs::metadata(parent)?;
     if !parent_metadata.is_dir()
         || parent_metadata.uid() != unsafe { libc::geteuid() }

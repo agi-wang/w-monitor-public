@@ -212,8 +212,7 @@ function showRecovery(key, rotated = false) {
 function shellQuote(value) { return "'" + value.replaceAll("'", "'\"'\"'") + "'"; }
 function installCommand() {
   if (!bootstrap) return t("点击“生成新的接入凭据”，再复制安装命令。已注册设备不受凭据轮换影响。");
-  const config = shellQuote(JSON.stringify({ endpoint_url: session.ingest_url, auth_token: bootstrap, interval: 60000, compress_reports: true }));
-  return `(set -eu; set -o pipefail; umask 077; wm_dir="$HOME/.config/w-monitor-public"; [ ! -L "$wm_dir" ]; mkdir -p "$wm_dir"; [ -O "$wm_dir" ]; chmod 700 "$wm_dir"; [ ! -L "$wm_dir/agent.json" ]; if [ ! -e "$wm_dir/agent.json" ]; then (set -C; printf '%s\\n' ${config} > "$wm_dir/agent.json"); fi; curl -fsSL --proto '=https' --max-time 30 'https://raw.githubusercontent.com/agi-wang/w-monitor-public/main/install.sh' | bash; exec "$HOME/.local/bin/w-monitor-lite" --config "$wm_dir/agent.json")`;
+  return `curl -fsSL --proto '=https' --max-time 30 'https://raw.githubusercontent.com/agi-wang/w-monitor-public/main/install.sh' | bash -s -- --endpoint ${shellQuote(session.ingest_url)} --key ${shellQuote(bootstrap)}`;
 }
 async function copy(value) {
   try { await navigator.clipboard.writeText(value); notice(t("已复制。")); }

@@ -6,8 +6,12 @@ REPOSITORY=agi-wang/w-monitor-public
 version=""
 public_origin=""
 language=en
+agent_args=()
+verify_provenance=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --key|--endpoint|--config) [ "$#" -ge 2 ] || exit 2; agent_args+=("$1" "$2"); shift 2 ;;
+    --verify-provenance) verify_provenance=true; shift ;;
     --public) [ "$#" -ge 2 ] || exit 2; public_origin="$2"; shift 2 ;;
     --language) [ "$#" -ge 2 ] || exit 2; language="$2"; shift 2 ;;
     v*) [ -z "$version" ] || exit 2; version="$1"; shift ;;
@@ -18,9 +22,11 @@ case "$language" in en|zh-CN) ;; *) echo 'Unsupported language' >&2; exit 2 ;; e
 if [ -n "$public_origin" ]; then
   [ ! -e "$HOME/.config/w-monitor-public/agent.json" ] && [ ! -L "$HOME/.config/w-monitor-public/agent.json" ] || { echo 'An Agent config already exists. Use your saved configuration; refusing to create a duplicate space.' >&2; exit 1; }
 fi
-for program in curl python3 gh sha256sum install; do
+for program in curl sha256sum install; do
   command -v "$program" >/dev/null 2>&1 || { printf 'Required tool not installed: %s\n' "$program" >&2; exit 1; }
 done
+if [ -n "$public_origin" ]; then command -v python3 >/dev/null || { echo "Python 3 is needed for anonymous setup" >&2; exit 1; }; fi
+if $verify_provenance; then command -v gh >/dev/null || { echo "gh is required for --verify-provenance" >&2; exit 1; }; fi
 [ "$(uname -s)" = Linux ] || { echo 'Linux is required' >&2; exit 1; }
 case "$(uname -m)" in
   x86_64) platform=linux-amd64 ;;
@@ -29,14 +35,16 @@ case "$(uname -m)" in
 esac
 if [ -z "$version" ]; then
   version=$(curl -fsSL --proto '=https' --tlsv1.2 --max-time 20 --retry 2 --max-filesize 1048576 \
-    "https://api.github.com/repos/$REPOSITORY/releases/latest" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')
+    "https://api.github.com/repos/$REPOSITORY/releases/latest" | sed -n 's/.*"tag_name": *"\(v[0-9]*\.[0-9]*\.[0-9]*\)".*/\1/p')
 fi
 [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid release tag' >&2; exit 1; }
 asset="w-monitor-lite-$platform"
 temporary=$(mktemp -d)
 trap 'rm -rf -- "$temporary"' EXIT
 base="https://github.com/$REPOSITORY/releases/download/$version"
-for file in "$asset" "$asset.sha256" provenance.jsonl; do
+files=("$asset" "$asset.sha256")
+if $verify_provenance; then files+=(provenance.jsonl); fi
+for file in "${files[@]}"; do
   curl -fsSL --proto '=https' --tlsv1.2 --max-time 120 --retry 2 --max-filesize 134217728 \
     "$base/$file" -o "$temporary/$file"
 done
@@ -45,14 +53,15 @@ signer_repository="$REPOSITORY"
 # The immutable first release predates the repository rename. Its signed
 # certificate must still match the original identity, never a broad fallback.
 if [ "$version" = v1.0.80 ]; then signer_repository=agi-wang/w-monitor-lite; fi
-gh attestation verify "$temporary/$asset" --bundle "$temporary/provenance.jsonl" \
+if $verify_provenance; then gh attestation verify "$temporary/$asset" --bundle "$temporary/provenance.jsonl" \
   --repo "$signer_repository" --source-ref "refs/tags/$version" \
-  --signer-workflow "$signer_repository/.github/workflows/ci.yml"
+  --signer-workflow "$signer_repository/.github/workflows/ci.yml"; fi
 binary_dir="$HOME/.local/bin"
 [ ! -L "$binary_dir" ] || { echo 'Binary directory cannot be a symlink' >&2; exit 1; }
 mkdir -p "$binary_dir"
 [ -O "$binary_dir" ] || { echo 'Binary directory must belong to the current user' >&2; exit 1; }
-python3 -c 'import os,stat,sys; m=os.stat(sys.argv[1]); sys.exit(1 if m.st_mode & 0o022 else 0)' "$binary_dir"
+permissions=$(stat -c %a "$binary_dir")
+(( (8#$permissions & 8#022) == 0 )) || { echo "Binary directory must not be writable by other users" >&2; exit 1; }
 [ ! -e "$binary_dir/w-monitor-lite" ] || [ -f "$binary_dir/w-monitor-lite" ] || { echo 'Existing binary path is not a regular file' >&2; exit 1; }
 staged="$binary_dir/.w-monitor-lite.$$.tmp"
 [ ! -e "$staged" ] && [ ! -L "$staged" ] || { echo 'Staging path already exists' >&2; exit 1; }
@@ -109,9 +118,11 @@ try:
     for key, pattern in (("recovery", r"wmr_[a-f0-9]{64}"), ("bootstrap_key", r"wmb_[a-f0-9]{64}")):
         if not re.fullmatch(pattern, result.get(key, "")):
             raise ValueError("Invalid setup credential")
-    for key, path in (("ingest_url", "ingest"), ("manage_url", "manage"), ("status_url", "status")):
+    for key, path in (("manage_url", "manage"), ("status_url", "status")):
         if not re.fullmatch(re.escape(origin) + "/" + path + r"/wm1_[A-Za-z0-9_-]{40,320}", result.get(key, "")):
             raise ValueError("Setup addresses must stay on the chosen origin")
+    if result.get("ingest_url") != origin + "/api/v1/report":
+        raise ValueError("Invalid report endpoint")
     # Show the only recovery copy before any further step can fail.
     labels = ("私密恢复 Key（请保存，勿公开）", "管理地址", "公开状态页") if language == "zh-CN" else ("Private recovery key (save securely, do not share)", "Management", "Public status")
     for label, key in zip(labels, ("recovery", "manage_url", "status_url")):
@@ -134,3 +145,5 @@ print("首次真实上报后，设备会自动出现在公开页。Agent 在前�
 os.execv(binary, [binary, "--config", str(directory / "agent.json")])
 PYTHON_PUBLIC_SETUP
 fi
+
+if [ "${#agent_args[@]}" -gt 0 ]; then exec "$binary_dir/w-monitor-lite" "${agent_args[@]}"; fi
