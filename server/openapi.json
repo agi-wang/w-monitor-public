@@ -1,0 +1,1754 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "W Monitor Public API",
+    "version": "1.0.81",
+    "description": "Independent read-only telemetry receiver. No host-control APIs, update executors or private W Monitor dependencies. Recovery and registration secrets are shown once and persisted only as SHA-256 digests. Monitoring-space management does not operate monitored hosts. Dynamic telemetry lives only in encrypted Redis; SQLite holds durable user/space metadata, credential digests and notification delivery bookkeeping. Missing Redis is unknown, never a SQLite telemetry fallback. AES-GCM addresses are purpose-bound and never replace authentication. The backend negotiates zh-CN/en with Accept-Language and returns Content-Language; unsupported languages fall back to en. User/host text is preserved."
+  },
+  "servers": [
+    {
+      "url": "https://monitor.example.com"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BrowserSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-wm_public",
+        "description": "Owner-only, Secure, HttpOnly, SameSite=Lax browser cookie. Mutations additionally require trusted Origin and X-CSRF-Token."
+      },
+      "ReportBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "wmb_ bootstrap registration or sat_ bound telemetry-only machine credential; never a browser/control credential."
+      },
+      "OperationToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Operation-Token",
+        "description": "Encrypted manage-purpose token for the current session space. This token alone grants no access."
+      }
+    },
+    "schemas": {
+      "Report": {
+        "type": "object",
+        "required": [
+          "version",
+          "agent_id",
+          "collectors"
+        ],
+        "properties": {
+          "version": {
+            "const": "1.0"
+          },
+          "agent_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "hostname": {
+            "type": "string"
+          },
+          "collectors": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      },
+      "Status": {
+        "type": "object",
+        "required": [
+          "title",
+          "devices",
+          "read_only"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "read_only": {
+            "const": true
+          },
+          "realtime": {
+            "type": "boolean"
+          },
+          "devices": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "online": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "last_seen": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "Server receive time in Unix seconds"
+                },
+                "cpu_percent": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "memory_percent": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "disk_percent": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "data_status": {
+                  "type": "string",
+                  "enum": [
+                    "available",
+                    "awaiting_report",
+                    "unavailable"
+                  ]
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "data_available": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PageWrite": {
+        "type": "object",
+        "required": [
+          "title",
+          "device_ids"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "device_ids": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{32}$"
+            }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Receiver health and read-only deployment capabilities",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        }
+      }
+    },
+    "/api/session": {
+      "get": {
+        "summary": "Issue/read a private browser session and CSRF token",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "description": "Fresh sessions have no monitoring-space grant. Claimed spaces are listed only for the verified identity. No platform admin bypass exists."
+      }
+    },
+    "/api/spaces/create": {
+      "post": {
+        "summary": "Create an anonymous or signed-in monitoring space",
+        "security": [
+          {
+            "BrowserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "maxLength": 80
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ]
+      }
+    },
+    "/api/spaces/restore": {
+      "post": {
+        "summary": "Recover the same device group using its private recovery key",
+        "security": [
+          {
+            "BrowserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "recovery"
+                ],
+                "properties": {
+                  "recovery": {
+                    "type": "string",
+                    "pattern": "^wmr_[a-f0-9]{64}$",
+                    "writeOnly": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ]
+      }
+    },
+    "/api/spaces/select": {
+      "post": {
+        "summary": "Select a space owned by the verified signed-in identity",
+        "security": [
+          {
+            "BrowserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "id"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ]
+      }
+    },
+    "/api/spaces/claim": {
+      "post": {
+        "summary": "Claim the current space to a normal verified login",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ]
+      }
+    },
+    "/api/spaces/delete": {
+      "post": {
+        "summary": "Delete the current space, devices, pages and browser sessions",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "title"
+                ],
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ]
+      }
+    },
+    "/api/recovery/rotate": {
+      "post": {
+        "summary": "Rotate recovery/bootstrap keys and revoke other browser sessions",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ]
+      }
+    },
+    "/api/bootstrap/rotate": {
+      "post": {
+        "summary": "Issue a new device-registration credential",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ]
+      }
+    },
+    "/api/login": {
+      "post": {
+        "summary": "Begin optional Authorization Code + PKCE login",
+        "security": [
+          {
+            "BrowserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ]
+      }
+    },
+    "/api/logout": {
+      "post": {
+        "summary": "Revoke the current browser session",
+        "security": [
+          {
+            "BrowserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ]
+      }
+    },
+    "/api/devices/revoke": {
+      "post": {
+        "summary": "Remove an owned device and revoke its machine token",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "id"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ]
+      }
+    },
+    "/api/pages/create": {
+      "post": {
+        "summary": "Create another independently selected public status page",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PageWrite"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ]
+      }
+    },
+    "/api/pages/update": {
+      "post": {
+        "summary": "Update selection/title/enabled state of an owned status page",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PageWrite"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ]
+      }
+    },
+    "/api/pages/rotate": {
+      "post": {
+        "summary": "Revoke and replace a page public URL",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "id"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ]
+      }
+    },
+    "/api/pages/delete": {
+      "post": {
+        "summary": "Delete an owned status page and revoke its public URL",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "id"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ]
+      }
+    },
+    "/auth/callback": {
+      "get": {
+        "summary": "Consume a session-bound, expiring OAuth state/code",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "303": {
+            "description": "Session rotated; return to the dashboard"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "description": "Redirects to / after verified userinfo and session-ID rotation. Normal login does not grant host control or other users’ monitoring spaces. Existing claimed spaces are recovered by verified issuer/subject identity. The anonymous space is claimed only through an explicit authenticated claim action."
+      }
+    },
+    "/api/devices": {
+      "get": {
+        "summary": "List the current space’s devices and scalar telemetry",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        }
+      }
+    },
+    "/api/devices/{id}": {
+      "get": {
+        "summary": "Read one owned device’s complete latest snapshot",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{32}$"
+            }
+          }
+        ]
+      }
+    },
+    "/api/pages": {
+      "get": {
+        "summary": "List at most 16 pages in the current space",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        }
+      }
+    },
+    "/api/public/status/{slug}": {
+      "get": {
+        "summary": "Read a published allowlisted status projection",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "description": "Only names, online state, server receive time and basic resource percentages. No device IDs, addresses, raw collectors, logs or credentials. Offline percentages are null. Publication and ownership are checked before cache access. Disabled, rotated or deleted links return 404.",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^wm1_[A-Za-z0-9_-]{40,320}$"
+            }
+          }
+        ]
+      }
+    },
+    "/events/space": {
+      "get": {
+        "summary": "Optional bounded server-to-browser invalidation stream",
+        "security": [
+          {
+            "BrowserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "description": "SSE events changed (opaque revision only) and revoked. Explicitly enabled deployments only; maximum 32 global / 4 per scope, each stream lasts at most about 12 seconds and revalidates authorization/publication each iteration. No incoming subscriptions or host operations. Shared hosting defaults to five-second polling; enable SSE only after confirming streaming and spare WSGI workers."
+      }
+    },
+    "/events/status/{slug}": {
+      "get": {
+        "summary": "Optional bounded server-to-browser invalidation stream",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "description": "SSE events changed (opaque revision only) and revoked. Explicitly enabled deployments only; maximum 32 global / 4 per scope, each stream lasts at most about 12 seconds and revalidates authorization/publication each iteration. No incoming subscriptions or host operations. Shared hosting defaults to five-second polling; enable SSE only after confirming streaming and spare WSGI workers.",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^wm1_[A-Za-z0-9_-]{40,320}$"
+            }
+          }
+        ]
+      }
+    },
+    "/ingest/{token}": {
+      "post": {
+        "summary": "Ingest one full v1.0 telemetry report",
+        "security": [
+          {
+            "ReportBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "description": "Maximum uncompressed UTF-8 JSON body: 8 MiB. Authorization: Bearer bootstrap or bound machine token. Machine tokens are bound to one space and agent_id. Replies contain scope=telemetry, commands=[], and a bounded report interval; first registration returns a sat_ machine token. No commands, acknowledgements, alternate control transport or update directives are processed. Unsupported delta snapshots request a full report. Additional fields are tolerated. The encrypted ingest token must identify the credential’s space. A missing Redis write returns 503 and does not acknowledge the report.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Report"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^wm1_[A-Za-z0-9_-]{40,320}$"
+            }
+          }
+        ]
+      }
+    },
+    "/api/email": {
+      "get": {
+        "summary": "Read bound verified email and delivery availability",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "description": "Owner-scoped contact. can_bind requires a normal identity with email_verified=true; delivery_available requires a configured SMTP relay."
+      }
+    },
+    "/api/email/bind": {
+      "post": {
+        "summary": "Bind the normal login’s verified email with explicit notification consent",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ],
+        "description": "No arbitrary recipient address is accepted. SMTP must be configured to enable delivery."
+      }
+    },
+    "/api/email/settings": {
+      "post": {
+        "summary": "Enable or disable opt-in state-change notifications",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ],
+        "description": "No arbitrary recipient address is accepted. SMTP must be configured to enable delivery."
+      }
+    },
+    "/api/email/unbind": {
+      "post": {
+        "summary": "Remove email binding and cancel pending notifications",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ],
+        "description": "No arbitrary recipient address is accepted. SMTP must be configured to enable delivery."
+      }
+    }
+  }
+}

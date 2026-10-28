@@ -2,7 +2,7 @@
 # Manual installation/update only. No daemon, privilege escalation or self-update.
 set -euo pipefail
 umask 077
-REPOSITORY=agi-wang/w-monitor-lite
+REPOSITORY=agi-wang/w-monitor-public
 version="${1:-}"
 for program in curl python3 gh sha256sum install; do
   command -v "$program" >/dev/null 2>&1 || { printf 'Required tool not installed: %s\n' "$program" >&2; exit 1; }
@@ -27,9 +27,13 @@ for file in "$asset" "$asset.sha256" provenance.jsonl; do
     "$base/$file" -o "$temporary/$file"
 done
 (cd "$temporary" && sha256sum -c "$asset.sha256")
+signer_repository="$REPOSITORY"
+# The immutable first release predates the repository rename. Its signed
+# certificate must still match the original identity, never a broad fallback.
+if [ "$version" = v1.0.80 ]; then signer_repository=agi-wang/w-monitor-lite; fi
 gh attestation verify "$temporary/$asset" --bundle "$temporary/provenance.jsonl" \
-  --repo "$REPOSITORY" --source-ref "refs/tags/$version" \
-  --signer-workflow "$REPOSITORY/.github/workflows/ci.yml"
+  --repo "$signer_repository" --source-ref "refs/tags/$version" \
+  --signer-workflow "$signer_repository/.github/workflows/ci.yml"
 binary_dir="$HOME/.local/bin"
 [ ! -L "$binary_dir" ] || { echo 'Binary directory cannot be a symlink' >&2; exit 1; }
 mkdir -p "$binary_dir"

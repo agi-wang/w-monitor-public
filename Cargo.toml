@@ -1,10 +1,10 @@
 [package]
 name = "w-monitor-lite"
-version = "1.0.80"
+version = "1.0.81"
 edition = "2021"
 license = "MIT"
 description = "Read-only Linux host monitoring agent. No remote control or self-updater."
-repository = "https://github.com/agi-wang/w-monitor-lite"
+repository = "https://github.com/agi-wang/w-monitor-public"
 publish = false
 
 [workspace]

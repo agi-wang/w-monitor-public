@@ -28,7 +28,7 @@ The optional proprietary audit engine is omitted explicitly.
 CI uses a locked dependency graph, RustSec auditing, pinned Actions and a static
 ELF gate. Publishing requires successful AMD64/ARM64 builds and a matching version
 tag contained in main. The publisher does not execute built artifacts or receive
-platform deployment credentials. Consumers should verify both checksums and the
+platform deployment credentials. Receiver deployment uses a separate restricted job. Consumers should verify both checksums and the
 repository/workflow identity in GitHub artifact attestations. Provenance proves
 origin and integrity; it is not a code audit or an authorization to auto-update.
 
@@ -36,3 +36,35 @@ To report a vulnerability, use this repository's private vulnerability reporting
 form if enabled. Do not include credentials or live host reports in public issues.
 If private reporting is unavailable, open an issue asking for a private contact
 without disclosing exploit details or sensitive data.
+
+## Public receiver
+
+The Python receiver is independently deployable and has no host-control APIs or
+control transport. It never sends commands or update directives. A full report is
+accepted only with a space-matching ingest address and bootstrap/device Bearer
+credential. Public projections use an explicit field allowlist, and publication
+and ownership are checked before serving cached data.
+
+Private data/configuration live outside the web root with owner-only permissions.
+PyCA AES-256-GCM uses random nonces and separate authenticated purposes for links,
+contacts and Redis payloads. Opaque encrypted addresses are not a substitute for
+sessions, CSRF checks or TLS. Recovery keys are bearer access credentials; save them
+privately. Rotation invalidates other space sessions. Share-link rotation/disable
+is checked on every request, including when a cached projection exists.
+
+Redis is required for ingestion and rate limiting; unavailable telemetry is unknown
+and is never written into SQLite. Dynamic byte budgets, space/device/session/page
+quotas, request bounds and short timeouts limit use within a shared-host account.
+These limits do not provide a complete public-internet DDoS defense. Enforce network
+and account resource limits at the hosting edge as well.
+
+Email requires a verified login identity and explicit space opt-in. Addresses and
+queued recipients are encrypted in SQLite. Delivery uses certificate-validated
+STARTTLS, bounded attempts and daily limits. Neither bootstrap credentials nor
+recovery keys are included in mail. Management links in mail still require access.
+
+Receiver CI/CD uses a dedicated child-account forced-command key. The reseller
+credential is never available to GitHub Actions. Only verified versioned archives
+are accepted; releases cannot overwrite an existing version or automatically
+downgrade. The deploy key can install receiver code and therefore must be protected
+as production access. Agent installation remains a separate manual operation.

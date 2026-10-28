@@ -2,3 +2,10 @@
 *.env
 config.json
 /lite-state/
+__pycache__/
+*.pyc
+/artifacts/
+/release/
+*.sqlite3*
+*.key
+deploy-config.json

@@ -1,0 +1,17 @@
+{
+  "public_url": "https://monitor.example.com",
+  "data_dir": "/home/account/.w-monitor",
+  "web_root": "/home/account/domains/monitor.example.com/public_html",
+  "instance_secret": "REPLACE_WITH_64_RANDOM_HEX_CHARACTERS",
+  "redis_socket": "/home/account/.redis/redis.sock",
+  "report_interval_ms": 60000,
+  "enable_events": false,
+  "oidc_base_url": "",
+  "oidc_client_id": "",
+  "oidc_client_secret": "",
+  "smtp_host": "",
+  "smtp_port": 587,
+  "smtp_user": "",
+  "smtp_password": "",
+  "smtp_from": ""
+}
