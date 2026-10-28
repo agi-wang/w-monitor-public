@@ -176,12 +176,23 @@ jobs:
             gh attestation verify "$temporary/assets/$asset" --bundle "$temporary/assets/provenance.jsonl" \
               --repo "$GH_REPO" --source-ref "refs/tags/$RELEASE_TAG" --signer-workflow "$GH_REPO/.github/workflows/ci.yml"
           done
-          (cd "$temporary/assets" && zip -q -0 "$temporary/delivery.zip" ./*)
+          chmod 644 "$temporary/assets/"*
+          TZ=UTC touch -t 202601010000 "$temporary/assets/"*
+          (cd "$temporary/assets" && zip -q -X -0 "$temporary/delivery.zip" ./*)
           sha=$(sha256sum "$temporary/delivery.zip" | cut -d' ' -f1)
           [[ "$sha" =~ ^[a-f0-9]{64}$ ]]
           umask 077
           printf '%s\n' "$DEPLOY_KEY" > "$temporary/identity"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$temporary/known_hosts"
-          ssh -i "$temporary/identity" -o BatchMode=yes -o ConnectTimeout=10 \
+          ssh -i "$temporary/identity" -o KexAlgorithms=diffie-hellman-group14-sha256 -c aes128-ctr -o BatchMode=yes -o ConnectTimeout=10 \
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$temporary/known_hosts" \
             "$DEPLOY_USER@$DEPLOY_HOST" "deploy $RELEASE_TAG $sha" < "$temporary/delivery.zip"
+          curl -fsS --proto '=https' --tlsv1.2 --tls-max 1.2 --max-time 20 --retry 2 \
+            https://monitor.20290708.xyz/health > "$temporary/health.json"
+          python3 -c 'import json,os,sys; h=json.load(open(sys.argv[1])); assert h["release_tag"] == os.environ["RELEASE_TAG"] and h["host_control_enabled"] is False and h["cache"] == "redis"' "$temporary/health.json"
+          mkdir "$temporary/website"
+          for file in w-monitor-lite-linux-amd64 w-monitor-lite-linux-amd64.sha256 w-monitor-lite-linux-arm64 w-monitor-lite-linux-arm64.sha256 install.sh install.sh.sha256; do
+            curl -fsS --proto '=https' --tlsv1.2 --tls-max 1.2 --max-time 90 --retry 2 \
+              "https://monitor.20290708.xyz/downloads/$RELEASE_TAG/$file" -o "$temporary/website/$file"
+          done
+          (cd "$temporary/website" && sha256sum -c w-monitor-lite-linux-amd64.sha256 && sha256sum -c w-monitor-lite-linux-arm64.sha256 && sha256sum -c install.sh.sha256)
