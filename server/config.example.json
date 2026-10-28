@@ -13,5 +13,8 @@
   "smtp_port": 587,
   "smtp_user": "",
   "smtp_password": "",
-  "smtp_from": ""
+  "smtp_from": "",
+  "metrics_interval_ms": 3000,
+  "page_refresh_ms": 1500,
+  "snapshot_cache_ms": 500
 }

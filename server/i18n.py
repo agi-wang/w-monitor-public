@@ -3,6 +3,8 @@ import html
 import re
 
 EN = {
+    "网络": "Network",
+    "数据地区": "Data region",
     '平台当前负载': 'Platform load',
     '每分钟更新': 'Updated every minute',
     '在线 / 接入设备': 'Online / Registered devices',

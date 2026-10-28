@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "W Monitor Public API",
-    "version": "1.0.81",
+    "version": "1.0.82",
     "description": "Independent read-only telemetry receiver. No host-control APIs, update executors or private W Monitor dependencies. Recovery and registration secrets are shown once and persisted only as SHA-256 digests. Monitoring-space management does not operate monitored hosts. Dynamic telemetry lives only in encrypted Redis; SQLite holds durable user/space metadata, credential digests and notification delivery bookkeeping. Missing Redis is unknown, never a SQLite telemetry fallback. AES-GCM addresses are purpose-bound and never replace authentication. The backend negotiates zh-CN/en with Accept-Language and returns Content-Language; unsupported languages fall back to en. User/host text is preserved."
   },
   "servers": [
@@ -57,6 +57,14 @@
           "metadata": {
             "type": "object",
             "additionalProperties": true
+          },
+          "report_kind": {
+            "type": "string",
+            "enum": [
+              "full",
+              "metrics"
+            ],
+            "default": "full"
           }
         },
         "additionalProperties": true
@@ -148,6 +156,11 @@
           "total": {
             "type": "integer",
             "minimum": 0
+          },
+          "refresh_ms": {
+            "type": "integer",
+            "minimum": 500,
+            "maximum": 60000
           }
         }
       },
@@ -1845,7 +1858,7 @@
             "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
           }
         },
-        "description": "Maximum decoded UTF-8 JSON body: 8 MiB. Authorization: Bearer bootstrap or bound machine token. Machine tokens are bound to one space and agent_id. Replies contain scope=telemetry, commands=[], and a bounded report interval; first registration returns a sat_ machine token. No commands, acknowledgements, alternate control transport or update directives are processed. Unsupported delta snapshots request a full report. Additional fields are tolerated. The fixed endpoint routes reports solely by the hashed Bearer credential; URLs never contain tenant credentials. A missing Redis write returns 503 and does not acknowledge the report. Identity and gzip encodings are accepted, both bounded to 8 MiB. Steady-state reports never write SQLite. Compressed Redis snapshots expire after 300 seconds; last-seen metadata remains.",
+        "description": "Maximum decoded UTF-8 JSON body: 8 MiB. Authorization: Bearer bootstrap or bound machine token. Machine tokens are bound to one space and agent_id. Replies contain scope=telemetry, commands=[], and a bounded report interval; first registration returns a sat_ machine token. No commands, acknowledgements, alternate control transport or update directives are processed. Unsupported delta snapshots request a full report. Additional fields are tolerated. The fixed endpoint routes reports solely by the hashed Bearer credential; URLs never contain tenant credentials. A missing Redis write returns 503 and does not acknowledge the report. Identity and gzip encodings are accepted, both bounded to 8 MiB. Steady-state reports never write SQLite. Compressed Redis snapshots expire after 300 seconds; last-seen metadata remains. Responses include runtime-configured report_interval_ms and metrics_interval_ms. Metrics samples require bound device credentials and update compact Redis metadata only; full diagnostic snapshots retain their own cadence and TTL. Protection is per valid credential, allowing many devices behind one NAT.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1855,7 +1868,21 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "X-WM-Report-Kind",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "metrics"
+              ]
+            },
+            "description": "Required for metrics-only samples (64 KiB maximum decoded/wire); omit for full reports."
+          }
+        ]
       }
     },
     "/downloads/{filename}": {
@@ -1931,6 +1958,17 @@
           },
           "404": {
             "description": "Unknown file or unavailable release"
+          }
+        }
+      }
+    },
+    "/api/regions": {
+      "get": {
+        "summary": "List independently stored regional deployments from runtime configuration",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "current region ID plus regions containing id, name and HTTPS origin"
           }
         }
       }

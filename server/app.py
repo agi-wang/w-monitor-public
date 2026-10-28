@@ -25,7 +25,7 @@ from redis_cache import RedisCache
 from encryption import SealedData
 from i18n import EN, language, render_html, translate
 
-VERSION = "1.0.81"
+VERSION = "1.0.82"
 SOURCE_RELEASE = Path(__file__).resolve().parents[1].name
 MAX_BODY = 8 * 1024 * 1024
 WEB = Path(__file__).resolve().parent / "web"
@@ -72,6 +72,16 @@ def private_config():
 
 
 CONFIG, DATA, ORIGIN, INTERVAL, ISSUER = private_config()
+def cadence(name, default, minimum, maximum):
+    value = CONFIG.get(name, default)
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise RuntimeError("Invalid cadence: " + name)
+    return value
+
+
+METRICS_INTERVAL = cadence("metrics_interval_ms", 3000, 1000, 60000)
+PAGE_REFRESH = cadence("page_refresh_ms", 1500, 500, 60000)
+SNAPSHOT_CACHE = cadence("snapshot_cache_ms", 500, 100, 5000)
 BOX = SealedData(CONFIG["instance_secret"])
 DATABASE = DATA / "monitor.sqlite3"
 CACHE = RedisCache(CONFIG.get("redis_socket", ""))
@@ -164,7 +174,7 @@ def limited(identity, limit, seconds):
         raise Rejected(429, "操作过于频繁，请稍后再试")
 
 
-def body(environ, maximum=256 * 1024):
+def body(environ, maximum=256 * 1024, *, compressed=False):
     try:
         length = int(environ.get("CONTENT_LENGTH") or "0")
     except ValueError:
@@ -172,7 +182,7 @@ def body(environ, maximum=256 * 1024):
     if length < 0 or length > maximum:
         raise Rejected(413, "请求超过大小限制")
     encoding = environ.get("HTTP_CONTENT_ENCODING", "identity")
-    if environ.get("CONTENT_TYPE", "").split(";", 1)[0].lower() != "application/json" or encoding not in ("identity", "gzip") or (encoding == "gzip" and maximum != MAX_BODY):
+    if environ.get("CONTENT_TYPE", "").split(";", 1)[0].lower() != "application/json" or encoding not in ("identity", "gzip") or (encoding == "gzip" and not compressed):
         raise Rejected(415, "请发送 JSON（上报支持 gzip 压缩）")
     try:
         def invalid_constant(_value):
@@ -287,10 +297,14 @@ def live_metadata(rows):
     return result, True
 
 
+def network_rate(value):
+    return round(value, 2) if type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1e15 else None
+
+
 def projection(row, meta=None, public=False, available=True):
     received = meta.get("received_at") if isinstance(meta, dict) else None
     online = received >= time.time() - max(60, INTERVAL / 1000 * 2.1) if type(received) is int else None
-    result = {"name": meta.get("name", row["name"]) if isinstance(meta, dict) else row["name"], "online": online, "last_seen": received, "data_status": "available" if received else "awaiting_report" if available else "unavailable", "cpu_percent": meta.get("cpu") if online else None, "memory_percent": meta.get("memory") if online else None, "disk_percent": meta.get("disk") if online else None}
+    result = {"name": meta.get("name", row["name"]) if isinstance(meta, dict) else row["name"], "online": online, "last_seen": received, "data_status": "available" if received else "awaiting_report" if available else "unavailable", "cpu_percent": meta.get("cpu") if online else None, "memory_percent": meta.get("memory") if online else None, "disk_percent": meta.get("disk") if online else None, "network_rx_bps": meta.get("network_rx_bps") if online else None, "network_tx_bps": meta.get("network_tx_bps") if online else None}
     if not public:
         result["id"] = row["id"]
         result["agent_id"] = row["agent_id"]
@@ -317,10 +331,10 @@ def snapshot(db, space=None, slug=None, number=0):
         selection_raw = None
     key = NAMESPACE + "view:" + ("public:" if slug else "space:") + scope + ":" + str(number)
     cached_view = CACHE.read_view(DYNAMIC, key, space_id)
-    # A five-second shared snapshot matches browser refresh cadence. Per-report
+    # Short shared snapshots follow the configured realtime cadence. Per-report
     # invalidation would rebuild every page of a large fleet dozens of times a
     # second. Ownership/revocation/publication still come from SQLite each read.
-    fingerprint = digest(json.dumps([revision, cached_view[:1] if cached_view else None, title, digest(selection_raw) if selection_raw else None, int(time.time()) // 5]))
+    fingerprint = digest(json.dumps([revision, cached_view[:1] if cached_view else None, title, digest(selection_raw) if selection_raw else None, int(time.time() * 1000) // SNAPSHOT_CACHE, PAGE_REFRESH, SNAPSHOT_CACHE]))
     if cached_view and cached_view[2]:
         try:
             cached = BOX.open("view:" + digest(key), json.loads(cached_view[2]))
@@ -328,13 +342,14 @@ def snapshot(db, space=None, slug=None, number=0):
                 return cached["snapshot"].encode()
         except (ValueError, TypeError, KeyError):
             pass
-    rows = db.execute("SELECT id,agent_id,name FROM devices WHERE space_id=? ORDER BY name,id", (space_id,)).fetchall()
-    selected = set(json.loads(selection_raw)) if selection_raw is not None else None
-    rows = [row for row in rows if selected is None or row["id"] in selected]
-    total = len(rows)
-    rows = rows[number * 100:(number + 1) * 100]
+    where, arguments = "space_id=?", [space_id]
+    if selection_raw is not None:
+        where += " AND id IN (SELECT value FROM json_each(?))"
+        arguments.append(selection_raw)
+    total = db.execute("SELECT count(*) FROM devices WHERE " + where, arguments).fetchone()[0]
+    rows = db.execute("SELECT id,agent_id,name FROM devices WHERE " + where + " ORDER BY name,id LIMIT 100 OFFSET ?", [*arguments, number * 100]).fetchall()
     metadata, available = live_metadata(rows)
-    result = {"title": title, "devices": [projection(row, metadata.get(row["id"]), bool(slug), available) for row in rows], "read_only": True, "realtime": CONFIG.get("enable_events") is True, "data_available": available, "page": number, "page_size": 100, "total": total}
+    result = {"title": title, "devices": [projection(row, metadata.get(row["id"]), bool(slug), available) for row in rows], "read_only": True, "realtime": CONFIG.get("enable_events") is True, "data_available": available, "page": number, "page_size": 100, "total": total, "refresh_ms": PAGE_REFRESH}
     payload = json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()
     if available:
         CACHE.put(key, BOX.seal("view:" + digest(key), {"fingerprint": fingerprint, "snapshot": payload.decode()}), NAMESPACE + "views")
@@ -342,9 +357,9 @@ def snapshot(db, space=None, slug=None, number=0):
 
 
 def receive(db, environ):
-    limited("report:" + environ.get("REMOTE_ADDR", ""), 3000, 60)
     auth = environ.get("HTTP_AUTHORIZATION", "")
     if not auth.startswith("Bearer ") or len(auth) > 256:
+        limited("invalid-report:" + environ.get("REMOTE_ADDR", ""), 3000, 60)
         raise Rejected(401, "需要设备上报凭据")
     token = auth[7:]
     if not re.fullmatch(r"(?:sat_[a-f0-9]{32}|wmb_[a-f0-9]{64})", token):
@@ -355,13 +370,20 @@ def receive(db, environ):
     machine = db.execute("SELECT id,space_id,agent_id,token_hash FROM devices WHERE token_hash=?", (credential,)).fetchone() if token.startswith("sat_") else None
     space = db.execute("SELECT id,auto_page FROM spaces WHERE bootstrap_hash=?", (credential,)).fetchone() if token.startswith("wmb_") else None
     if machine is None and space is None:
+        limited("invalid-report:" + environ.get("REMOTE_ADDR", ""), 3000, 60)
         raise Rejected(401, "上报凭据无效或已吊销")
-    report = body(environ, MAX_BODY)
+    limited("device-report:" + machine["id"] if machine else "bootstrap-report:" + credential, 120 if machine else 3000, 60)
+    metrics = environ.get("HTTP_X_WM_REPORT_KIND") == "metrics"
+    report = body(environ, 65536 if metrics else MAX_BODY, compressed=True)
+    if report.get("report_kind", "full") != ("metrics" if metrics else "full") or (metrics and not machine):
+        raise Rejected(400, "无效 JSON")
     agent = report.get("agent_id", "")
     if not isinstance(agent, str) or not 1 <= len(agent.encode()) <= 255 or agent != agent.strip() or any(ord(c) < 32 or ord(c) == 127 for c in agent):
         raise Rejected(400, "无效设备标识")
     if report.get("version") != "1.0" or not isinstance(report.get("collectors"), dict) or ("compact" in report and not isinstance(report["compact"], dict)):
         raise Rejected(400, "需要 v1.0 完整采集快照")
+    if metrics and not set(report["collectors"]) <= {"cpu", "memory", "disk", "network"}:
+        raise Rejected(400, "无效 JSON")
     # Registration serializes durable ownership/token writes. Steady-state
     # telemetry never takes the SQLite writer lock or rewrites the device row.
     if not machine:
@@ -376,8 +398,8 @@ def receive(db, environ):
     space_id = machine["space_id"] if machine else space["id"]
     # Stable per-device staggering spreads a fleet's subsequent reports without
     # adding an Agent update/control mechanism.
-    interval = max(10000, min(300000, INTERVAL + int(digest(agent)[:8], 16) % max(1, INTERVAL // 5) - INTERVAL // 10))
-    reply = {"status": "ok", "agent_id": agent, "commands": [], "report_role": "primary", "report_interval_ms": interval, "scope": "telemetry"}
+    interval = max(5000, min(300000, INTERVAL + int(digest(agent)[:8], 16) % max(1, INTERVAL // 5) - INTERVAL // 10))
+    reply = {"status": "ok", "agent_id": agent, "commands": [], "report_role": "primary", "report_interval_ms": interval, "metrics_interval_ms": METRICS_INTERVAL, "scope": "telemetry"}
     if report.get("compact", {}).get("mode") == "delta":
         db.rollback()
         return {**reply, "request_full_report": True}
@@ -396,8 +418,9 @@ def receive(db, environ):
             # Later registrations never add devices to this page automatically.
             db.execute("UPDATE pages SET selection=? WHERE id=? AND space_id=? AND enabled=1", (json.dumps([device_id]), space["auto_page"], space_id))
             db.execute("UPDATE spaces SET auto_page=NULL WHERE id=?", (space_id,))
-    metadata = {"name": name, "received_at": int(time.time()), "cpu": percent(cpu.get("usage_percent", cpu.get("usage"))), "memory": percent(memory.get("usage_percent")), "disk": percent(disk.get("usage_percent"))}
-    stored = CACHE.store_report(DYNAMIC, device_id, space_id, BOX.seal_report("report:" + device_id, report), BOX.seal("metrics:" + device_id, metadata), secrets.token_hex(16))
+    network = scalar(collectors, "network")
+    metadata = {"name": name, "received_at": int(time.time()), "cpu": percent(cpu.get("usage_percent", cpu.get("usage"))), "memory": percent(memory.get("usage_percent")), "disk": percent(disk.get("usage_percent")), "network_rx_bps": network_rate(network.get("total_received_bytes_per_sec")), "network_tx_bps": network_rate(network.get("total_transmitted_bytes_per_sec"))}
+    stored = CACHE.store_metrics(DYNAMIC, device_id, space_id, BOX.seal("metrics:" + device_id, metadata), secrets.token_hex(16)) if metrics else CACHE.store_report(DYNAMIC, device_id, space_id, BOX.seal_report("report:" + device_id, report), BOX.seal("metrics:" + device_id, metadata), secrets.token_hex(16))
     if stored != 1:
         raise Rejected(503, "实时数据存储暂不可用；本次上报未确认")
     try:
@@ -487,6 +510,15 @@ def route(db, environ):
     locale = language(environ.get("HTTP_ACCEPT_LANGUAGE", ""))
     if method == "GET" and path == "/health":
         return 200, {"status": "ok", "version": VERSION, "release_tag": SOURCE_RELEASE if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", SOURCE_RELEASE) else None, "mode": "public", "host_control_enabled": False, "agent_updates": "manual", "cache": "redis" if CACHE.healthy() else "unavailable", "realtime": "sse" if CONFIG.get("enable_events") is True else "polling"}, []
+    if method == "GET" and path == "/api/regions":
+        regions = CONFIG.get("regions", [{"id": CONFIG.get("region_id", "default"), "name": ORIGIN, "origin": ORIGIN}])
+        result = []
+        for region in regions:
+            parsed = urlsplit(region["origin"])
+            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ("", "/") or not isinstance(region["name"], str) or len(region["name"]) > 120 or any(ord(c) < 32 for c in region["name"]):
+                raise RuntimeError("Invalid region configuration")
+            result.append({"id": region["id"], "name": region["name"], "origin": region["origin"].rstrip("/")})
+        return 200, {"current": CONFIG.get("region_id", "default"), "regions": result}, []
     if method == "GET" and path == "/api/platform-load":
         raw = CACHE.command("GET", NAMESPACE + "platform-load")
         if raw:

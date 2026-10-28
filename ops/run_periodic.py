@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import subprocess
 
-private = Path.home() / ".w-monitor"
+private = Path(__file__).resolve().parent
 active = json.loads((private / "active-release.json").read_text())
 tag = active.get("tag", "")
 if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
