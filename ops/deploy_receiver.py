@@ -181,7 +181,13 @@ def deploy():
             raise RuntimeError("Cannot read account crontab")
         lines = [line for line in previous_cron.stdout.splitlines() if not line.endswith("# w-monitor-public")]
         lines.append(f"* * * * * {python} {periodic} >> {PRIVATE}/periodic.log 2>&1 # w-monitor-public")
-        subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n", text=True, check=True, timeout=10)
+        # CageFS crontab accepts a private file, but rejects stdin "-".
+        cron_input = PRIVATE / (".cron-" + secrets.token_hex(16))
+        try:
+            atomic(cron_input, ("\n".join(lines) + "\n").encode())
+            subprocess.run(["crontab", str(cron_input)], check=True, timeout=10)
+        finally:
+            cron_input.unlink(missing_ok=True)
         subprocess.run([python, str(periodic)], check=True, timeout=60, stdout=subprocess.DEVNULL)
         # Retain active and one preceding immutable release. Application data and
         # configuration are outside this directory and never touched here.
