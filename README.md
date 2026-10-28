@@ -10,6 +10,23 @@ Read-only diagnostics can invoke fixed local tools (for example `nvidia-smi`,
 `systemctl show`, `docker stats`, ping and traceroute). It does not elevate privileges.
 Run as an ordinary user when possible; unavailable system data is reported explicitly.
 
+## Manual installer
+
+After installing `curl`, Python 3 and the current GitHub CLI, download the
+reviewable installer and run it yourself:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/agi-wang/w-monitor-lite/main/install.sh -o install.sh
+bash install.sh v1.0.80
+```
+
+It checks the checksum **and the signed repository/workflow/tag provenance**,
+then atomically installs only the binary into `$HOME/.local/bin`. It does not
+create a system service, start the agent, ask for root, or schedule future updates.
+Omit the tag only when you intentionally want the latest stable release. If `gh`
+requires authentication on your system, sign in with your own GitHub account or
+build from source; the installer never receives a platform signing key.
+
 ## Run
 
 Download the Linux AMD64 or ARM64 binary and its `.sha256` file from [Releases](https://github.com/agi-wang/w-monitor-lite/releases).
