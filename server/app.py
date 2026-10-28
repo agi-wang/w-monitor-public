@@ -309,34 +309,35 @@ def snapshot(db, space=None, slug=None, number=0):
         page = db.execute("SELECT p.*,s.revision FROM pages p JOIN spaces s ON s.id=p.space_id WHERE p.id=? AND p.slug_hash=? AND p.enabled=1", (page_id, digest(slug))).fetchone()
         if not page:
             raise Rejected(404, "此分享链接已停用或不存在")
-        selection = json.loads(page["selection"])
+        selection_raw = page["selection"]
         scope, title, space_id, revision = page["id"], page["title"], page["space_id"], page["revision"]
     else:
         scope, title, space_id, revision = space["id"], space["title"], space["id"], space["revision"]
-        selection = None
+        selection_raw = None
     key = NAMESPACE + "view:" + ("public:" if slug else "space:") + scope + ":" + str(number)
     cached_view = CACHE.read_view(DYNAMIC, key, space_id)
     # A five-second shared snapshot matches browser refresh cadence. Per-report
     # invalidation would rebuild every page of a large fleet dozens of times a
     # second. Ownership/revocation/publication still come from SQLite each read.
-    fingerprint = digest(json.dumps([revision, cached_view[:1] if cached_view else None, title, selection, int(time.time()) // 5]))
+    fingerprint = digest(json.dumps([revision, cached_view[:1] if cached_view else None, title, digest(selection_raw) if selection_raw else None, int(time.time()) // 5]))
     if cached_view and cached_view[2]:
         try:
             cached = BOX.open("view:" + digest(key), json.loads(cached_view[2]))
-            if cached.get("fingerprint") == fingerprint:
-                return cached["snapshot"]
+            if cached.get("fingerprint") == fingerprint and isinstance(cached.get("snapshot"), str):
+                return cached["snapshot"].encode()
         except (ValueError, TypeError, KeyError):
             pass
     rows = db.execute("SELECT id,agent_id,name FROM devices WHERE space_id=? ORDER BY name,id", (space_id,)).fetchall()
-    selected = set(selection) if selection is not None else None
+    selected = set(json.loads(selection_raw)) if selection_raw is not None else None
     rows = [row for row in rows if selected is None or row["id"] in selected]
     total = len(rows)
     rows = rows[number * 100:(number + 1) * 100]
     metadata, available = live_metadata(rows)
     result = {"title": title, "devices": [projection(row, metadata.get(row["id"]), bool(slug), available) for row in rows], "read_only": True, "realtime": CONFIG.get("enable_events") is True, "data_available": available, "page": number, "page_size": 100, "total": total}
+    payload = json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()
     if available:
-        CACHE.put(key, BOX.seal("view:" + digest(key), {"fingerprint": fingerprint, "snapshot": result}), NAMESPACE + "views")
-    return result
+        CACHE.put(key, BOX.seal("view:" + digest(key), {"fingerprint": fingerprint, "snapshot": payload.decode()}), NAMESPACE + "views")
+    return payload
 
 
 def receive(db, environ, expected_space):
@@ -457,7 +458,7 @@ def events(environ, slug=None):
                         if active and active["space_id"] != space["id"]:
                             raise Rejected(403, "空间已切换")
                         view = snapshot(db, current_space(db, active) if active else None, slug)
-                    revision = digest(json.dumps([view, CACHE.command("HGET", DYNAMIC, "rev:" + observed_space)], sort_keys=True))
+                    revision = digest(view.decode() + ":" + str(CACHE.command("HGET", DYNAMIC, "rev:" + observed_space)))
                     if revision != previous:
                         yield ("event: changed\ndata: " + json.dumps({"revision": revision}) + "\n\n").encode()
                         previous = revision
