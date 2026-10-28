@@ -63,9 +63,9 @@ class RedisCache:
 
     def put(self, key, value, registry):
         raw = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-        if len(raw.encode()) > 32768:
+        if len(raw.encode()) > 131072:
             return None
-        # At most 512 small projections (16 MiB payload) with one fixed key per
+        # At most 512 projections (64 MiB working cache) with one fixed key per
         # scope. The registry expires too; stale entries cannot grow forever.
         script = """
         redis.call('ZREMRANGEBYSCORE',KEYS[2],'-inf',ARGV[2])
