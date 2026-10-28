@@ -96,6 +96,16 @@ class RedisCache:
         """
         return self.command("EVAL", script, 1, namespace + "requests:" + str(int(time.time()) // 60), max(0, int(duration_us)), status)
 
+    def store_metrics(self, key, device, space, meta, epoch):
+        # Fast resource samples never replace or extend the full diagnostic snapshot.
+        script = """
+        if redis.call('HEXISTS',KEYS[1],'__epoch')==0 then redis.call('HSET',KEYS[1],'__epoch',ARGV[4]) end
+        redis.call('HSET',KEYS[1],'meta:'..ARGV[1],ARGV[3])
+        redis.call('HINCRBY',KEYS[1],'rev:'..ARGV[2],1)
+        return 1
+        """
+        return self.command("EVAL", script, 1, key, device, space, meta, epoch)
+
     def store_report(self, key, device, space, raw, meta, epoch):
         # Full snapshots are a short-lived compressed cache, not a resource
         # quota. Offline raw payloads expire; compact last-seen metadata remains.

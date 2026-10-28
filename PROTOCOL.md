@@ -1,4 +1,4 @@
-# Public monitoring contract v1.0.81
+# Public monitoring contract v1.0.82
 
 [OpenAPI](server/openapi.json) describes browser, ingestion and public-status APIs.
 This receiver implements the existing v1.0 full report envelope; it has no Private
@@ -78,12 +78,11 @@ Raw snapshots are compressed before encryption and expire five minutes after the
 last update; last-seen metrics remain until the device is removed. View caches have
 fixed scope/page keys with short expiry and bounded working memory. Responses use
 ETag/If-None-Match after authorization, returning 304 when unchanged. Shared
-snapshots refresh at five-second boundaries rather than invalidating every page
+snapshots refresh at configured subsecond boundaries rather than invalidating every page
 for every report; access changes and publication are checked on every request.
 An absent last report yields `online: null`; unavailable or absent Redis data never
 becomes an inferred host outage. Offline percentages are null. Reporting deadlines
-use server receive time and the configured interval. Browser polling defaults to
-five seconds; optional authenticated, bounded SSE carries only invalidations and
+use server receive time and the configured interval. Browser polling follows the server-provided refresh_ms; optional authenticated, bounded SSE carries only invalidations and
 rechecks access. Shared hosting does not promise native WebSocket streaming.
 
 ## Email
@@ -117,3 +116,37 @@ Public downloads use GET/HEAD `/downloads/[vX.Y.Z/]filename` with a fixed allowl
 for the installer, Linux amd64/arm64 binaries, SHA-256 inventories, provenance and
 `version.txt`. Versioned responses are immutable. Current aliases revalidate.
 Files stream with bounded buffers and never expose configuration or tenant data.
+
+## Runtime cadence and fast samples
+
+The private server configuration controls `report_interval_ms` (full reports,
+default 60000), `metrics_interval_ms` (default 3000), `page_refresh_ms` (default
+1500) and `snapshot_cache_ms` (default 500). Edit configuration and restart the
+receiver to change them without compiling. Every successful report response
+returns both report intervals; the Agent validates and adopts each response.
+Status snapshots return `refresh_ms`, and the browser adjusts its polling period.
+These defaults target roughly five-second resource visibility; network delay and
+actual host capacity must be measured separately.
+
+After a full report establishes a device token, a supporting Agent sends bounded
+CPU/memory/disk/network samples using `X-WM-Report-Kind: metrics` and
+`report_kind: "metrics"`. Decoded/wire fast samples are limited to 64 KiB and
+require a device credential. Fast samples update Redis metrics and last-seen time;
+they never replace or extend the full diagnostic snapshot. Full read-only
+collection continues at its own cadence. Old Agents ignore the additive interval
+hint and continue full reporting; Agent upgrades remain manual. Invalid keys are
+rejected before decompression, and valid-device request protection is scoped to
+the credential rather than a shared NAT address.
+
+GET `/api/regions` returns the runtime-configured regional names and origins.
+Regions hold independent spaces, keys, SQLite and Redis data. Website commands
+explicitly pass that website's origin; an unconfigured Agent launched without
+parameters uses terminal prompts to select a region and either enter a key or
+create a new anonymous space. Creation prints recovery/management/public links.
+Only non-recovery links may be saved with the device configuration.
+
+Online state, aggregate counts and notifications use the same per-device expected
+interval. Supporting Agents advertise `metadata.capabilities["telemetry.metrics"]`
+and fast samples use the configured metrics interval; legacy devices retain their
+full-report deadline. Runtime `offline_grace_ms` (default 15000) prevents short
+collection/network gaps from producing false outage transitions.

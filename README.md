@@ -202,3 +202,35 @@ On HostBrr, provision account Cron through DirectAdmin's `CMD_API_CRON_JOBS` API
 Run the stable `ops/run_periodic.py` entrypoint every minute. The forced SSH
 environment cannot install Cron reliably; releases reuse the account Cron and
 automatically select the newly activated version.
+
+### Runtime tuning and regional setup
+
+Cadence values are runtime configuration, not build options. Set
+`report_interval_ms`, `metrics_interval_ms`, `page_refresh_ms` and
+`snapshot_cache_ms` in the private receiver config, then restart its WSGI app.
+The receiver returns cadence requirements with every report and status response.
+The Agent keeps full diagnostic collection while sending small resource samples
+more frequently. Existing installed Agents must be upgraded manually to use this.
+
+Configure `region_id` and `regions: [{"id":"us","name":"United States",
+"origin":"https://monitor.example.com"}]` per deployment; do not share database,
+instance secret or Redis namespace between regions. Website installation passes
+its own origin using `--public` for a new space or `--endpoint ... --key ...` for
+an existing space. Running an unconfigured Agent without parameters opens a
+terminal region/key setup. Existing configuration is reused without prompting.
+
+Regional CI uses protected `public-production` (US) and `public-singapore` (SG)
+environments. Each defines `PUBLIC_ORIGIN`, `PUBLIC_DEPLOY_HOST`,
+`PUBLIC_DEPLOY_USER` and `PUBLIC_DEPLOY_TRANSPORT`. The SSH transport uses
+`PUBLIC_DEPLOY_KEY` / `PUBLIC_DEPLOY_KNOWN_HOSTS` secrets. The DirectAdmin panel
+transport uses `PUBLIC_DEPLOY_PANEL_URL`, `PUBLIC_DEPLOY_PRIVATE_DIR`,
+`PUBLIC_DEPLOY_PYTHON` and the environment secret `PUBLIC_DEPLOY_PANEL_PASSWORD`.
+It uploads the verified inventory privately, then invokes the preinstalled gate
+through the authenticated panel terminal. Both transports verify active health
+and website binary hashes. Provision the private gate/config and account Cron
+once before enabling tag deployment. Ordinary hosting accounts share their Unix
+identity with other vhosts; independent data directories are not OS isolation.
+
+`offline_grace_ms` is also editable at startup (default 15000). Online status,
+platform counts and notifications share one deadline calculation using each
+device's negotiated reporting cadence, including legacy Agents.

@@ -3,7 +3,7 @@ import json
 import os
 import time
 
-from app import BOX, CACHE, INTERVAL, NAMESPACE, database, live_metadata
+from app import BOX, CACHE, NAMESPACE, database, live_metadata, offline_after
 
 
 def main():
@@ -28,7 +28,7 @@ def main():
             for item in metadata.values():
                 if type(item.get("received_at")) is int:
                     known += 1
-                    online += item["received_at"] >= now - max(60, INTERVAL / 1000 * 2.1)
+                    online += item["received_at"] >= now - offline_after(item)
     try:
         host_load = [round(value, 2) for value in os.getloadavg()]
     except OSError:

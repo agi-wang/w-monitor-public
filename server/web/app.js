@@ -5,7 +5,7 @@ const $ = (id) => document.getElementById(id);
 const publicSlug = /^\/status\/(wm1_[A-Za-z0-9_-]{40,320})$/.exec(location.pathname)?.[1];
 const responses = new Map();
 let session, devices = [], pages = [], bootstrap = "", editingPage = null;
-let lastView, currentPage = 0;
+let lastView, currentPage = 0, pollMs = 5000;
 let events, poll, refreshing = false, refreshAgain = false, generation = 0, allowEvents = false;
 
 function notice(message = "") { $("notice").textContent = message; $("notice").hidden = !message; }
@@ -52,7 +52,7 @@ function drawDevices(target, rows, publicView = false) {
   if (!rows.length) { empty(target, publicView ? t("暂无公开设备") : t("等待第一台设备"), publicView ? t("发布者尚未选择设备，或设备已被移除。") : t("点击“接入设备”，在主机上运行 Lite Agent。首次上报后设备会出现在这里。")); return; }
   const table = node("table", undefined, "device-table");
   const head = node("thead"), headRow = node("tr");
-  for (const label of [t("设备 / 最近上报"), t("状态"), "CPU", t("内存"), t("磁盘"), ...(publicView ? [] : [t("只读数据")])]) headRow.append(node("th", label));
+  for (const label of [t("设备 / 最近上报"), t("状态"), "CPU", t("内存"), t("磁盘"), t("网络"), ...(publicView ? [] : [t("只读数据")])]) headRow.append(node("th", label));
   head.append(headRow); table.append(head);
   const body = node("tbody");
   for (const device of rows) {
@@ -69,6 +69,9 @@ function drawDevices(target, rows, publicView = false) {
       const bar = node("span", undefined, "bar"), fill = node("i");
       fill.style.width = `${valid ? value : 0}%`; bar.append(fill); metric.append(bar); cell.append(metric); row.append(cell);
     }
+    const traffic = node("td", undefined, "metric-cell"); traffic.dataset.label = t("网络");
+    const rate = value => typeof value === "number" && Number.isFinite(value) && value >= 0 ? new Intl.NumberFormat(locale, { notation: "compact", maximumFractionDigits: 1 }).format(value) + " B/s" : "—";
+    traffic.textContent = `↓ ${rate(device.network_rx_bps)} · ↑ ${rate(device.network_tx_bps)}`; row.append(traffic);
     if (!publicView) {
       const cell = node("td", undefined, "actions-cell"), actions = node("div", undefined, "row-actions");
       actions.append(button(t("查看采集"), () => showReport(device), ""), button(t("移除接入"), async () => {
@@ -137,6 +140,9 @@ async function refresh() {
     notice(data.data_available === false ? t("实时数据暂时不可用，已隐藏资源读数。空间与设备接入信息仍已保存。") : "");
     if (data === lastView) return;
     lastView = data;
+    if (Number.isInteger(data.refresh_ms) && data.refresh_ms >= 500 && data.refresh_ms <= 60000 && pollMs !== data.refresh_ms) {
+      pollMs = data.refresh_ms; startRealtime();
+    }
     if (publicSlug) { $("public-title").textContent = data.title; drawDevices($("public-list"), data.devices, true); }
     else { devices = data.devices; $("device-count").textContent = data.total; drawDevices($("device-list"), devices); }
     drawPaging($(publicSlug ? "public-list" : "device-list"), data);
@@ -160,7 +166,7 @@ function startRealtime() {
   stopRealtime();
   if (document.hidden || (!publicSlug && !session?.space)) return;
   connection(t("定时刷新"));
-  poll = setInterval(() => void refresh(), 5000);
+  poll = setInterval(() => void refresh(), pollMs);
   if (!window.EventSource || !allowEvents) return;
   let errors = 0, firstEvent = true; const started = performance.now();
   const source = new EventSource(publicSlug ? `/events/status/${publicSlug}` : "/events/space"); events = source;
@@ -177,7 +183,7 @@ function startRealtime() {
   source.onerror = () => {
     if (events !== source) return;
     connection(t("定时刷新"));
-    clearInterval(poll); poll = setInterval(() => void refresh(), 5000);
+    clearInterval(poll); poll = setInterval(() => void refresh(), pollMs);
     if (++errors >= 2) { source.close(); events = undefined; }
   };
 }
@@ -311,4 +317,19 @@ window.addEventListener("pagehide", () => clearInterval(platformPoll));
 void run(async () => {
   if (publicSlug) { $("loading").hidden = true; $("public-page").hidden = false; await refresh(); startRealtime(); }
   else await loadSession();
+});
+
+void run(async () => {
+  if (publicSlug) return;
+  const catalog = await api("/api/regions");
+  for (const region of catalog.regions) {
+    const option = node("option", region.name); option.value = region.origin;
+    option.selected = region.origin === location.origin;
+    $("region-select").append(option);
+  }
+  $("region-picker").hidden = catalog.regions.length < 2;
+  $("region-select").onchange = () => {
+    const selected = catalog.regions.find(region => region.origin === $("region-select").value);
+    if (selected && selected.origin !== location.origin) location.assign(selected.origin + "/");
+  };
 });

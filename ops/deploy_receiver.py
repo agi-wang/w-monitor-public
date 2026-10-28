@@ -25,7 +25,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 import zipfile
 
 os.umask(0o077)
-PRIVATE = Path.home() / ".w-monitor"
+PRIVATE = Path(__file__).resolve().parent
 ROOT = Path.home() / "w-monitor-public"
 CONFIG = PRIVATE / "deploy-config.json"
 EXPECTED = {"server/app.py", "server/redis_cache.py", "server/encryption.py", "server/i18n.py", "server/metrics.py", "server/notify.py", "server/requirements.lock", "server/passenger_wsgi.py", "server/config.example.json", "server/openapi.json", "server/web/index.html", "server/web/app.js", "server/web/style.css"}

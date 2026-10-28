@@ -22,7 +22,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use sysinfo::{CpuRefreshKind, Disks, Networks, System};
 use tracing::{info, warn};
 use w_monitor_sdk::{
@@ -116,6 +116,113 @@ fn write_config(path: &Path, value: &Value) -> Result<()> {
         let _ = std::fs::remove_file(temp);
     }
     result
+}
+
+async fn interactive_setup(endpoint: &str, language: &str) -> Result<(String, Option<String>)> {
+    let mut url = url::Url::parse(endpoint)?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        bail!("Setup endpoint requires HTTPS without credentials, query or fragment");
+    }
+    url.set_path("/api/regions");
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(15))
+        .connect_timeout(Duration::from_secs(5))
+        .build()?;
+    let catalog = response_json(
+        client
+            .get(url)
+            .header("Accept-Language", language)
+            .send()
+            .await?,
+    )
+    .await?;
+    let regions = catalog["regions"]
+        .as_array()
+        .filter(|v| !v.is_empty() && v.len() <= 16)
+        .context("No available regions")?;
+    let mut terminal = OpenOptions::new().read(true).write(true).open("/dev/tty")
+        .context("Interactive setup needs a terminal; use --public URL or --endpoint URL --key KEY for unattended setup")?;
+    writeln!(
+        terminal,
+        "{}",
+        if language == "zh-CN" {
+            "请选择数据存储地区："
+        } else {
+            "Choose a data region:"
+        }
+    )?;
+    for (index, region) in regions.iter().enumerate() {
+        let name = region["name"]
+            .as_str()
+            .filter(|v| v.len() <= 120 && !v.chars().any(char::is_control))
+            .context("Invalid region name")?;
+        writeln!(terminal, "{}: {}", index + 1, name)?;
+    }
+    write!(
+        terminal,
+        "{} [1]: ",
+        if language == "zh-CN" {
+            "地区"
+        } else {
+            "Region"
+        }
+    )?;
+    terminal.flush()?;
+    let mut reader = std::io::BufReader::new(terminal.try_clone()?);
+    let mut answer = String::new();
+    use std::io::BufRead;
+    reader.read_line(&mut answer)?;
+    let index = if answer.trim().is_empty() {
+        0
+    } else {
+        answer
+            .trim()
+            .parse::<usize>()?
+            .checked_sub(1)
+            .context("Invalid region")?
+    };
+    let origin = regions
+        .get(index)
+        .and_then(|v| v["origin"].as_str())
+        .context("Invalid region")?;
+    let parsed = url::Url::parse(origin)?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || parsed.path() != "/"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        bail!("Invalid region origin");
+    }
+    write!(
+        terminal,
+        "{}: ",
+        if language == "zh-CN" {
+            "已有接入 Key（留空创建匿名空间）"
+        } else {
+            "Existing key (leave empty to create an anonymous space)"
+        }
+    )?;
+    terminal.flush()?;
+    answer.clear();
+    reader.read_line(&mut answer)?;
+    let key = answer.trim();
+    Ok((
+        origin.trim_end_matches('/').to_owned(),
+        if key.is_empty() {
+            None
+        } else {
+            Some(key.to_owned())
+        },
+    ))
 }
 
 async fn public_setup(origin: &str, language: &str) -> Result<Value> {
@@ -222,6 +329,7 @@ async fn post_report(
     token: &str,
     body: &[u8],
     compressed: bool,
+    metrics: bool,
 ) -> Result<Value> {
     // No redirect can forward a credential. The configured origin is the only
     // telemetry destination, and every request has a whole-request deadline.
@@ -231,6 +339,11 @@ async fn post_report(
         .header("Content-Type", "application/json");
     let request = if compressed {
         request.header("Content-Encoding", "gzip")
+    } else {
+        request
+    };
+    let request = if metrics {
+        request.header("X-WM-Report-Kind", "metrics")
     } else {
         request
     };
@@ -268,7 +381,7 @@ async fn response_json(response: reqwest::Response) -> Result<Value> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
     tracing_subscriber::fmt()
         .with_env_filter("info")
         .with_target(false)
@@ -279,6 +392,15 @@ async fn main() -> Result<()> {
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
+    if args.key.is_none() && args.public.is_none() && !args.config.exists() {
+        let (origin, key) = interactive_setup(&args.endpoint, &args.language).await?;
+        if let Some(key) = key {
+            args.endpoint = format!("{origin}/api/v1/report");
+            args.key = Some(key);
+        } else {
+            args.public = Some(origin);
+        }
+    }
     if let Some(origin) = &args.public {
         std::fs::DirBuilder::new()
             .recursive(true)
@@ -402,7 +524,7 @@ async fn main() -> Result<()> {
     let mut interval_ms = config["interval"]
         .as_u64()
         .unwrap_or(60_000)
-        .clamp(10_000, 1_800_000);
+        .clamp(5_000, 1_800_000);
     // Enabled by Public configurations; existing receiver configurations retain
     // their transport until a local operator explicitly enables compression.
     let compress_reports = config["compress_reports"].as_bool().unwrap_or(false);
@@ -469,10 +591,13 @@ async fn main() -> Result<()> {
     let scheduler = Arc::new(Mutex::new(collectors::CollectorScheduler::new(restricted)));
     let mut latest = HashMap::new();
     let mut heavy_keys = Vec::<String>::new();
+    let mut metrics_ms = None;
+    let mut full_due = Instant::now();
     info!(
         "Lite started: full permitted read-only collection; no remote control or automatic updates"
     );
     loop {
+        let cycle_started = Instant::now();
         if tasks.iter().any(tokio::task::JoinHandle::is_finished) {
             bail!("A diagnostic collector exited; restart the Agent");
         }
@@ -487,7 +612,13 @@ async fn main() -> Result<()> {
             transport.clone(),
             scheduler.clone(),
         );
+        let full = metrics_ms.is_none() || Instant::now() >= full_due || !token.starts_with("sat_");
         let mut snapshot = tokio::task::spawn_blocking(move || {
+            if !full {
+                return collectors::collect_realtime_metrics(
+                    &sys, &networks, &disks, &rates, &transport, restricted,
+                );
+            }
             scheduler.lock().collect(
                 &sys,
                 &networks,
@@ -514,18 +645,62 @@ async fn main() -> Result<()> {
             heavy_keys = keys;
         }
         latest.extend(snapshot);
-        latest.insert("security_advisories".into(), security.lock().clone());
-        latest.insert("software_inventory".into(), inventory.lock().clone());
+        if full {
+            latest.insert("security_advisories".into(), security.lock().clone());
+            latest.insert("software_inventory".into(), inventory.lock().clone());
+        }
         if let Some(access) = latest.get_mut("runtime_access") {
             access["lite_mode"] = json!(true);
         }
-        let mut report = SystemReport::build(&identity, latest.clone(), interval_ms);
+        let outgoing = if full {
+            latest.clone()
+        } else {
+            latest
+                .iter()
+                .filter(|(key, _)| matches!(key.as_str(), "cpu" | "memory" | "disk" | "network"))
+                .map(|(key, value)| {
+                    let data = value.get("data").unwrap_or(value);
+                    let fields: &[&str] = if key == "network" {
+                        &[
+                            "total_received_bytes_per_sec",
+                            "total_transmitted_bytes_per_sec",
+                            "total_received_bytes",
+                            "total_transmitted_bytes",
+                        ]
+                    } else {
+                        &[
+                            "usage_percent",
+                            "usage",
+                            "total_bytes",
+                            "used_bytes",
+                            "available_bytes",
+                        ]
+                    };
+                    let compact: serde_json::Map<String, Value> = fields
+                        .iter()
+                        .filter_map(|field| {
+                            data.get(*field)
+                                .map(|value| ((*field).to_owned(), value.clone()))
+                        })
+                        .collect();
+                    (key.clone(), Value::Object(compact))
+                })
+                .collect()
+        };
+        let mut report = SystemReport::build(&identity, outgoing, interval_ms);
         report.metadata.agent_version = env!("CARGO_PKG_VERSION").to_owned();
         report.apply_runtime_access(true);
         report.metadata.capabilities["agent.lite"] = json!(true);
+        report.metadata.capabilities["telemetry.metrics"] = json!(true);
         report.metadata.capabilities["security.inventory"] = json!("osv-v1");
         report.metadata.capabilities["security.advisories"] = json!("dpkg-v1");
-        let bytes = serde_json::to_vec(&report)?;
+        let bytes = if full {
+            serde_json::to_vec(&report)?
+        } else {
+            let mut wire = serde_json::to_value(&report)?;
+            wire["report_kind"] = json!("metrics");
+            serde_json::to_vec(&wire)?
+        };
         if bytes.len() > MAX_REPORT {
             bail!("Collected report exceeds 8 MiB; refusing an unbounded upload");
         }
@@ -544,7 +719,7 @@ async fn main() -> Result<()> {
         };
         let mut response = None;
         for attempt in 0..=2 {
-            match post_report(&client, &endpoint, &token, &bytes, compressed).await {
+            match post_report(&client, &endpoint, &token, &bytes, compressed, !full).await {
                 Ok(value) => {
                     response = Some(value);
                     break;
@@ -571,7 +746,16 @@ async fn main() -> Result<()> {
                     }
                 }
                 if let Some(ms) = value["report_interval_ms"].as_u64() {
-                    interval_ms = ms.clamp(10_000, 1_800_000);
+                    interval_ms = ms.clamp(5_000, 1_800_000);
+                }
+                metrics_ms = value["metrics_interval_ms"]
+                    .as_u64()
+                    .map(|ms| ms.clamp(1000, 60000));
+                if full {
+                    full_due = Instant::now() + Duration::from_millis(interval_ms);
+                }
+                if value["request_full_report"].as_bool() == Some(true) {
+                    full_due = Instant::now();
                 }
                 if let Ok(catalog) = serde_json::from_value::<
                     w_monitor_sdk::security_advisories::Catalog,
@@ -599,7 +783,7 @@ async fn main() -> Result<()> {
         }
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
-            _ = tokio::time::sleep(Duration::from_millis(interval_ms)) => {},
+            _ = tokio::time::sleep(Duration::from_millis(metrics_ms.unwrap_or(interval_ms)).saturating_sub(cycle_started.elapsed())) => {},
         }
     }
     for task in tasks {

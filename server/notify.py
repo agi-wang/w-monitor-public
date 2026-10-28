@@ -12,7 +12,7 @@ import ssl
 import time
 from urllib.parse import urlsplit
 
-from app import BOX, CACHE, CONFIG, DATA, INTERVAL, ORIGIN, database, live_metadata
+from app import BOX, CACHE, CONFIG, DATA, ORIGIN, database, live_metadata, offline_after
 
 
 def main():
@@ -35,7 +35,7 @@ def main():
                 meta = metadata.get(device["id"])
                 if not isinstance(meta, dict) or type(meta.get("received_at")) is not int:
                     continue  # Missing Redis data is unknown, never an outage.
-                state = "online" if meta["received_at"] >= now - max(60, INTERVAL / 1000 * 2.1) else "offline"
+                state = "online" if meta["received_at"] >= now - offline_after(meta) else "offline"
                 previous = db.execute("SELECT * FROM notification_state WHERE device_id=?", (device["id"],)).fetchone()
                 if not previous:
                     db.execute("INSERT INTO notification_state(device_id,state) VALUES(?,?)", (device["id"], state))
