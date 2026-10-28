@@ -612,7 +612,13 @@ async fn main() -> Result<()> {
             transport.clone(),
             scheduler.clone(),
         );
+        let full = metrics_ms.is_none() || Instant::now() >= full_due || !token.starts_with("sat_");
         let mut snapshot = tokio::task::spawn_blocking(move || {
+            if !full {
+                return collectors::collect_realtime_metrics(
+                    &sys, &networks, &disks, &rates, &transport, restricted,
+                );
+            }
             scheduler.lock().collect(
                 &sys,
                 &networks,
@@ -639,7 +645,6 @@ async fn main() -> Result<()> {
             heavy_keys = keys;
         }
         latest.extend(snapshot);
-        let full = metrics_ms.is_none() || Instant::now() >= full_due || !token.starts_with("sat_");
         if full {
             latest.insert("security_advisories".into(), security.lock().clone());
             latest.insert("software_inventory".into(), inventory.lock().clone());
