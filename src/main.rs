@@ -639,12 +639,14 @@ async fn main() -> Result<()> {
             heavy_keys = keys;
         }
         latest.extend(snapshot);
-        latest.insert("security_advisories".into(), security.lock().clone());
-        latest.insert("software_inventory".into(), inventory.lock().clone());
+        let full = metrics_ms.is_none() || Instant::now() >= full_due || !token.starts_with("sat_");
+        if full {
+            latest.insert("security_advisories".into(), security.lock().clone());
+            latest.insert("software_inventory".into(), inventory.lock().clone());
+        }
         if let Some(access) = latest.get_mut("runtime_access") {
             access["lite_mode"] = json!(true);
         }
-        let full = metrics_ms.is_none() || Instant::now() >= full_due || !token.starts_with("sat_");
         let outgoing = if full {
             latest.clone()
         } else {

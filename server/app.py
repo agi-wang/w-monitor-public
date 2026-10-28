@@ -129,7 +129,8 @@ with database() as _db:
       id TEXT PRIMARY KEY, space_id TEXT NOT NULL REFERENCES spaces(id),
       agent_id TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
       created_at INTEGER NOT NULL, UNIQUE(space_id,agent_id));
-    CREATE INDEX IF NOT EXISTS device_space ON devices(space_id);
+    CREATE INDEX IF NOT EXISTS device_space_name ON devices(space_id,name,id);
+    DROP INDEX IF EXISTS device_space;
     CREATE TABLE IF NOT EXISTS pages(
       id TEXT PRIMARY KEY, space_id TEXT NOT NULL REFERENCES spaces(id),
       slug_hash TEXT UNIQUE NOT NULL, slug_ciphertext TEXT NOT NULL,
@@ -298,7 +299,7 @@ def live_metadata(rows):
 
 
 def network_rate(value):
-    return round(value, 2) if type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1e15 else None
+    return round(value, 2) if type(value) in (int, float) and 0 <= value <= 1e15 and math.isfinite(value) else None
 
 
 def projection(row, meta=None, public=False, available=True):

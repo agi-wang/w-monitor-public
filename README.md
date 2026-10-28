@@ -218,3 +218,15 @@ instance secret or Redis namespace between regions. Website installation passes
 its own origin using `--public` for a new space or `--endpoint ... --key ...` for
 an existing space. Running an unconfigured Agent without parameters opens a
 terminal region/key setup. Existing configuration is reused without prompting.
+
+Regional CI uses protected `public-production` (US) and `public-singapore` (SG)
+environments. Each defines `PUBLIC_ORIGIN`, `PUBLIC_DEPLOY_HOST`,
+`PUBLIC_DEPLOY_USER` and `PUBLIC_DEPLOY_TRANSPORT`. The SSH transport uses
+`PUBLIC_DEPLOY_KEY` / `PUBLIC_DEPLOY_KNOWN_HOSTS` secrets. The DirectAdmin panel
+transport uses `PUBLIC_DEPLOY_PANEL_URL`, `PUBLIC_DEPLOY_PRIVATE_DIR`,
+`PUBLIC_DEPLOY_PYTHON` and the environment secret `PUBLIC_DEPLOY_PANEL_PASSWORD`.
+It uploads the verified inventory privately, then invokes the preinstalled gate
+through the authenticated panel terminal. Both transports verify active health
+and website binary hashes. Provision the private gate/config and account Cron
+once before enabling tag deployment. Ordinary hosting accounts share their Unix
+identity with other vhosts; independent data directories are not OS isolation.

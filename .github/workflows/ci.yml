@@ -142,20 +142,39 @@ jobs:
     needs: release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    environment: public-production
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - region: us
+            environment: public-production
+          - region: sg
+            environment: public-singapore
+    environment: ${{ matrix.environment }}
     concurrency:
-      group: public-receiver-production
+      group: public-receiver-production-${{ matrix.region }}
       cancel-in-progress: false
     permissions:
       contents: read
     steps:
-      # No source checkout and no execution of downloaded application code.
+      # The reviewed transport driver is checked out at the immutable tag.
+      # Downloaded application artifacts are never executed by the CI runner.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Verify the published receiver and deploy to its dedicated account
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
           DEPLOY_HOST: ${{ vars.PUBLIC_DEPLOY_HOST }}
+          PUBLIC_ORIGIN: ${{ vars.PUBLIC_ORIGIN }}
+          DEPLOY_TRANSPORT: ${{ vars.PUBLIC_DEPLOY_TRANSPORT }}
+          PUBLIC_DEPLOY_PANEL_URL: ${{ vars.PUBLIC_DEPLOY_PANEL_URL }}
+          PUBLIC_DEPLOY_USER: ${{ vars.PUBLIC_DEPLOY_USER }}
+          PUBLIC_DEPLOY_PRIVATE_DIR: ${{ vars.PUBLIC_DEPLOY_PRIVATE_DIR }}
+          PUBLIC_DEPLOY_PYTHON: ${{ vars.PUBLIC_DEPLOY_PYTHON }}
+          PUBLIC_DEPLOY_PANEL_PASSWORD: ${{ secrets.PUBLIC_DEPLOY_PANEL_PASSWORD }}
           DEPLOY_USER: ${{ vars.PUBLIC_DEPLOY_USER }}
           DEPLOY_KEY: ${{ secrets.PUBLIC_DEPLOY_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.PUBLIC_DEPLOY_KNOWN_HOSTS }}
@@ -164,7 +183,12 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
           [[ "$DEPLOY_USER" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]
-          test -n "$DEPLOY_KEY" && test -n "$DEPLOY_KNOWN_HOSTS"
+          [[ "$PUBLIC_ORIGIN" =~ ^https://[A-Za-z0-9.-]+$ ]]
+          if [ "$DEPLOY_TRANSPORT" = directadmin ]; then
+            test -n "$PUBLIC_DEPLOY_PANEL_PASSWORD"
+          else
+            test -n "$DEPLOY_KEY" && test -n "$DEPLOY_KNOWN_HOSTS"
+          fi
           temporary=$(mktemp -d)
           trap 'rm -rf -- "$temporary"' EXIT
           chmod 700 "$temporary"
@@ -184,15 +208,19 @@ jobs:
           umask 077
           printf '%s\n' "$DEPLOY_KEY" > "$temporary/identity"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$temporary/known_hosts"
-          ssh -i "$temporary/identity" -o KexAlgorithms=diffie-hellman-group14-sha256 -c aes128-ctr -o BatchMode=yes -o ConnectTimeout=10 \
-            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$temporary/known_hosts" \
-            "$DEPLOY_USER@$DEPLOY_HOST" "deploy $RELEASE_TAG $sha" < "$temporary/delivery.zip"
+          if [ "$DEPLOY_TRANSPORT" = directadmin ]; then
+            python3 ops/panel_deploy.py "$temporary/delivery.zip" "$RELEASE_TAG" "$sha"
+          else
+            ssh -i "$temporary/identity" -o KexAlgorithms=diffie-hellman-group14-sha256 -c aes128-ctr -o BatchMode=yes -o ConnectTimeout=10 \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$temporary/known_hosts" \
+              "$DEPLOY_USER@$DEPLOY_HOST" "deploy $RELEASE_TAG $sha" < "$temporary/delivery.zip"
+          fi
           curl -fsS --proto '=https' --tlsv1.2 --tls-max 1.2 --max-time 20 --retry 2 \
-            https://monitor.20290708.xyz/health > "$temporary/health.json"
+            "$PUBLIC_ORIGIN/health" > "$temporary/health.json"
           python3 -c 'import json,os,sys; h=json.load(open(sys.argv[1])); assert h["release_tag"] == os.environ["RELEASE_TAG"] and h["host_control_enabled"] is False and h["cache"] == "redis"' "$temporary/health.json"
           mkdir "$temporary/website"
           for file in w-monitor-lite-linux-amd64 w-monitor-lite-linux-amd64.sha256 w-monitor-lite-linux-arm64 w-monitor-lite-linux-arm64.sha256 install.sh install.sh.sha256; do
             curl -fsS --proto '=https' --tlsv1.2 --tls-max 1.2 --max-time 90 --retry 2 \
-              "https://monitor.20290708.xyz/downloads/$RELEASE_TAG/$file" -o "$temporary/website/$file"
+              "$PUBLIC_ORIGIN/downloads/$RELEASE_TAG/$file" -o "$temporary/website/$file"
           done
           (cd "$temporary/website" && sha256sum -c w-monitor-lite-linux-amd64.sha256 && sha256sum -c w-monitor-lite-linux-arm64.sha256 && sha256sum -c install.sh.sha256)
