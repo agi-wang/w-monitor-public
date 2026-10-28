@@ -1,113 +1,198 @@
-# W-Monitor Lite
+# W Monitor Public
 
-An open-source Linux monitoring agent with full permitted **read-only collection**.
-There is no remote command dispatcher, terminal, remote file manager, inbound
-listener, software installer, or self-updater in this repository.
+An independent, open-source monitoring suite: a Rust **Lite Agent** and a Python
+**read-only receiver**. It runs separately from W Monitor Private. The receiver
+has no host-command, terminal, remote-file or Agent-update implementation.
 
-It collects CPU, memory, disks, network, processes, GPU/container/service evidence,
-software inventory and security posture to the extent allowed by its OS user.
-Read-only diagnostics can invoke fixed local tools (for example `nvidia-smi`,
-`systemctl show`, `docker stats`, ping and traceroute). It does not elevate privileges.
-Run as an ordinary user when possible; unavailable system data is reported explicitly.
+Create an anonymous monitoring space, save its private recovery key, and connect
+your own agents. Restore the same space in another browser with that key. An
+optional normal OAuth login can claim a space; login never grants host control.
+Create several public pages, each with your own selection of devices. Visitors see
+only names, online status and CPU/memory/disk percentages. Full reports stay private.
 
-## Manual installer
+## One-command setup
 
-After installing `curl`, Python 3 and the current GitHub CLI, download the
-reviewable installer and run it yourself:
+The homepage offers **One-command device setup**. Copy its command to a Linux
+host with curl, Python 3 and GitHub CLI installed. `install.sh --public ORIGIN`
+verifies the Agent release, creates a new anonymous space and status page, writes
+an owner-only config, prints the private recovery key and management/public URLs,
+and starts the Agent in the foreground. The first real report selects that device
+for the page; later devices are never published automatically. Existing Agent
+configs are not overwritten. Save the printed key; use it to restore and optionally
+claim the space in your browser. This explicit setup option starts the local Agent;
+ordinary installation remains installation-only and all updates remain manual.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/agi-wang/w-monitor-lite/main/install.sh -o install.sh
-bash install.sh v1.0.80
-```
+## Lite Agent
 
-It checks the checksum **and the signed repository/workflow/tag provenance**,
-then atomically installs only the binary into `$HOME/.local/bin`. It does not
-create a system service, start the agent, ask for root, or schedule future updates.
-Omit the tag only when you intentionally want the latest stable release. If `gh`
-requires authentication on your system, sign in with your own GitHub account or
-build from source; the installer never receives a platform signing key.
+The Agent collects CPU, memory, disks, network, processes, GPU/container/service
+evidence, software inventory and security posture within its OS user's permissions.
+Fixed read-only diagnostic tools may run locally; it never elevates privileges.
+Unavailable collection is represented explicitly. The proprietary audit engine is
+omitted. The source and MIT-licensed `vendor/w-hostmetrics` need no private registry.
 
-## Run
-
-Download the Linux AMD64 or ARM64 binary and its `.sha256` file from [Releases](https://github.com/agi-wang/w-monitor-lite/releases).
-Verify the checksum and the GitHub Actions attestation before running it:
-
-```sh
-sha256sum -c w-monitor-lite-linux-amd64.sha256
-gh attestation verify ./w-monitor-lite-linux-amd64 \
-  --repo agi-wang/w-monitor-lite \
-  --signer-workflow agi-wang/w-monitor-lite/.github/workflows/ci.yml
-chmod 700 w-monitor-lite-linux-amd64
-```
-
-Create a private configuration directory and file:
+**Installation and updates are manual.** Review and run the installer yourself:
 
 ```sh
-mkdir -p "$HOME/.config/w-monitor-lite"
-chmod 700 "$HOME/.config/w-monitor-lite"
-(umask 077; cat > "$HOME/.config/w-monitor-lite/config.json" <<'JSON'
-{
-  "endpoint_url": "https://monitor.example.com/api/v1/report",
-  "auth_token": "REPLACE_WITH_YOUR_OWN_BOOTSTRAP_KEY",
-  "interval": 60000
-}
-JSON
-)
-./w-monitor-lite-linux-amd64 --config "$HOME/.config/w-monitor-lite/config.json"
+curl -fsSL https://raw.githubusercontent.com/agi-wang/w-monitor-public/main/install.sh -o install.sh
+bash install.sh v1.0.81
 ```
 
-The file must be owned by the current user, have mode 0600 and contain no URL
-credentials. Only HTTPS is accepted in normal operation. A loopback-only
-`--allow-local-http` switch is available for local development. No command-line
-auth-token argument is provided. The first successful handshake persists the
-server-issued telemetry credential and stable agent ID to this same private file.
-`lite-state/` holds only this agent's local collection/security caches.
+It verifies checksums and the repository/workflow/tag attestation, then atomically
+installs the binary in `$HOME/.local/bin`. It does not start it, create a service,
+request root, or schedule updates. Installed Agents never upgrade on server request.
+The preserved v1.0.80 release predates the repository rename and has the original
+`agi-wang/w-monitor-lite` attestation identity; the installer handles that exact tag.
 
-## Updates and compatibility
-
-**Updates are manual.** Download and verify a new release, stop your local process
-or user service, replace the binary and start it again. Responses containing
-`commands`, `update_version`, remote terminal data or alternate transport endpoints
-are ignored. Publishing a GitHub release does not update installed agents.
-
-This version sends bounded full snapshots over outbound HTTP(S), using the
-W-Monitor v1 report envelope. It does not open a TCP control connection or socket.
-The receiving server must support the `agent.lite` capability marker and enforce
-telemetry-only machine credentials. The corresponding W-Monitor server change is
-required before using this with an older server. Public status pages are a separate,
-server-side feature: they expose only the devices and scalar fields selected by
-the account owner, and do not make these full reports public.
-
-## Data and trust
-
-Full read-only collection can include hostnames, addresses, local account names,
-process names, service/configuration paths, public SSH-key metadata and security
-evidence. Collection performs credential redaction, but this is not a sandbox or a
-guarantee that arbitrary application output contains no sensitive text. Use only a
-monitoring endpoint you trust. Private keys, browser sessions and full environment
-files are not report payloads. Keep the bootstrap key and config private.
-
-The optional proprietary audit-engine integration is not included; its collector
-explicitly reports unavailable. The remaining collectors are derived from the
-W-Monitor read-only sources; `vendor/w-hostmetrics` is MIT-licensed source so a
-public checkout needs no private registry credentials.
-
-## Build and release
-
-Rust is pinned in `rust-toolchain.toml`; dependencies are locked in `Cargo.lock`.
-On Linux with `musl-tools` installed:
+The space dashboard supplies a private configuration with `compress_reports: true`
+(gzip over HTTPS, within the same 8 MiB decoded report limit), containing its encrypted
+`endpoint_url` and registration credential. Save it as an owner-only file:
 
 ```sh
-cargo build --release --locked --target x86_64-unknown-linux-musl
+mkdir -p "$HOME/.config/w-monitor-public"
+chmod 700 "$HOME/.config/w-monitor-public"
+chmod 600 "$HOME/.config/w-monitor-public/agent.json"
+w-monitor-lite --config "$HOME/.config/w-monitor-public/agent.json"
 ```
 
-GitHub Actions builds static AMD64 and ARM64 binaries for main/PR checks. A
-`vMAJOR.MINOR.PATCH` tag matching `Cargo.toml` and pointing into main publishes the
-same artifacts after both builds succeed. Actions are pinned to commit IDs. The
-build jobs have read-only repository permissions; the separate publisher has no
-source checkout and never executes an uploaded binary. GitHub's short-lived OIDC
-identity signs [build provenance](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations),
-without platform production keys or a long-lived signing secret. Existing release
-assets are not overwritten.
+The file must already contain the dashboard's configuration. The first successful
+report replaces the registration key with a device-bound telemetry token. Stop
+your own process/service before manually replacing the Agent binary. Reports use
+outbound HTTPS; server commands, update hints and alternate control transports
+are ignored. Full read-only reports can contain sensitive host metadata, so use a
+receiver you trust. See [SECURITY.md](SECURITY.md).
 
-See [SECURITY.md](SECURITY.md) for the security boundary and reporting process.
+The backend selects Simplified Chinese or English from the browser’s
+`Accept-Language` preferences (including quality values). Unsupported languages
+fall back to English. Pages, UI messages and API errors share that selection;
+notifications remember the browser language when email settings are saved.
+
+## Receiver storage and security
+
+- Redis stores compressed, encrypted dynamic reports, current metrics, short view caches,
+  rate limits and bounded stream leases. Full snapshots expire five minutes after
+  their last report; compact last-seen metadata remains. SQLite never stores
+  telemetry snapshots. Steady-state reports do not write SQLite.
+- SQLite persists monitoring spaces, hashed credentials, ownership, page choices,
+  encrypted email contacts, consent and the bounded notification outbox.
+- AES-256-GCM from PyCA encrypts purpose-bound public and management
+  addresses, stored links, email contacts and Redis payloads. HTTPS is still required.
+- A management address alone does not authorize access: a current session or
+  recovery key is required. Browser changes additionally require Origin and CSRF
+  validation. Report credentials cannot read the dashboard or operate a host.
+- Missing Redis data displays unknown, rather than a false offline status. Failed
+  ingestion returns 503; there is no SQLite telemetry fallback. There is no
+  application quota on device/space/page counts or a required Redis memory cap.
+  Status lists paginate 100 devices at a time and use conditional requests; page
+  editing loads the complete owned device list separately.
+- Back up the SQLite database **and the private instance encryption key**. Losing
+  that key makes existing encrypted data and links unreadable. Do not rotate it
+  casually; individual public links and recovery keys can be rotated in the UI.
+
+Optional login uses standard Authorization Code + PKCE, `/oauth/authorize`,
+`/oauth/token` and `/oauth/userinfo`, with `openid profile email`. W-ID can provide
+normal GitHub login; this suite imports no private W-ID SDK. Configure a confidential
+client with the exact callback `https://YOUR_DOMAIN/auth/callback`. Only a provider's
+explicitly verified email can be bound, and notifications require user opt-in.
+Without SMTP, the UI reports that delivery is unavailable.
+
+## DirectAdmin deployment
+
+Requires Python 3.12+, SQLite, a private managed Redis Unix socket, trusted HTTPS,
+and Python WSGI support. HostBrr's verified LiteSpeed entry is
+`/opt/alt/python313/bin/lswsgi`; the CLI/venv interpreter is
+`/opt/alt/python313/bin/python3`. This is a host capability, not a guarantee that
+all DirectAdmin/cPanel plans offer Python or persistent WebSockets.
+
+Keep source **outside** `public_html`, for example
+`$HOME/w-monitor-public/releases/v1.0.81/server`. Create a `runtime` venv beside
+`server`, and install only the locked wheels:
+
+```sh
+/opt/alt/python313/bin/python3 -m venv runtime
+runtime/bin/python -m pip install --require-hashes --only-binary=:all: -r server/requirements.lock
+```
+
+Copy `server/config.example.json` to `$HOME/.w-monitor/config.json`, set private
+paths, fixed HTTPS origin, Redis socket and a random 32-byte hex `instance_secret`.
+Use mode 0700 for `.w-monitor` and 0600 for its config/database. Never put them in
+the web root. LiteSpeed needs traversal through source parents and read access to
+public source files (parents 0711, source directories 0755, source files 0644).
+Keep the venv and all private data owner-only.
+
+The document root contains only `.htaccess`:
+
+```apache
+Options -Indexes
+PassengerAppRoot "/home/ACCOUNT/w-monitor-public/releases/v1.0.81/server"
+PassengerBaseURI "/"
+PassengerPython "/opt/alt/python313/bin/lswsgi"
+PassengerAppType wsgi
+PassengerStartupFile passenger_wsgi.py
+SetEnv WM_PUBLIC_CONFIG "/home/ACCOUNT/.w-monitor/config.json"
+```
+
+`passenger_wsgi.py` loads the adjacent release's venv packages. Verify `/health`
+returns `mode: public`, `host_control_enabled: false`, `cache: redis`. The default
+UI polls every five seconds. Optional bounded SSE invalidation is available with
+`enable_events: true` only after verifying the host's streaming behavior; this is
+not a WebSocket/control channel.
+
+The homepage shows a cached platform-load snapshot refreshed by the account Cron
+once per minute: request rate, mean application response time, 5xx rate, online/total
+devices and Redis memory. System load is explicitly labeled as shared-host load,
+not account CPU usage. The snapshot contains no tenant names, IDs or addresses.
+
+Optional email uses a dedicated SMTP account with STARTTLS and certificate
+validation. Set the `smtp_*` configuration fields. Run `server/notify.py` once per
+minute using the release venv, or install `ops/run_periodic.py` as a stable
+Cron entrypoint after automatic deployment is configured. It queues only opted-in
+offline/recovery changes, skips unknown Redis state, and bounds retries and volume.
+
+## CI, releases and receiver deployment
+
+Rust is pinned, dependencies are locked, and AMD64/ARM64 Linux binaries must pass
+the static musl gate. Python dependencies have exact versions and wheel hashes.
+Pinned GitHub Actions check main/PRs; a matching `vMAJOR.MINOR.PATCH` tag contained
+in main publishes the Agent binaries, installer and deterministic server ZIP with
+checksums and artifact provenance. Existing release assets are immutable.
+
+The separate `public-production` environment deploys the receiver and its versioned Agent downloads:
+
+- Variables: `PUBLIC_DEPLOY_HOST`, `PUBLIC_DEPLOY_USER`.
+- Secrets: a dedicated `PUBLIC_DEPLOY_KEY` and pinned `PUBLIC_DEPLOY_KNOWN_HOSTS`.
+- On the child account, install `ops/deploy_receiver.py` outside the web root and
+  restrict that key with `restrict,command="/opt/alt/python313/bin/python3 /home/ACCOUNT/.w-monitor/deploy_receiver.py"`.
+- Private `.w-monitor/deploy-config.json` contains `public_url`, `python` (CLI
+  interpreter) and `wsgi` (LiteSpeed interpreter). Never share reseller credentials.
+
+The job verifies the published ZIP's checksum and tag/workflow attestation, then
+sends it over restricted SSH. The receiver accepts a fixed file inventory, installs
+hashed dependencies, activates an immutable release, verifies health, and restores
+the previous hosting configuration on failure. Data/config are outside releases;
+active and previous releases are retained. A deploy key inherently authorizes new
+receiver code; protect repository/tag access and the deployment environment.
+**This server deployment workflow never updates installed Agents.**
+
+See [PROTOCOL.md](PROTOCOL.md) and [OpenAPI](server/openapi.json) for the contract.
+
+All Public devices use the fixed `https://monitor.20290708.xyz/api/v1/report`
+endpoint with `Authorization: Bearer <key>`. The registration key identifies the
+space; the server exchanges it for a device-bound token on first report.
+With the new binary, `w-monitor-lite --key <registration-key>` saves configuration
+privately and starts collection. Use `--endpoint https://your-host/api/v1/report`
+for a different receiver and `--config /private/path/agent.json` for a custom file.
+The installer checks HTTPS downloads against the release SHA-256 inventory;
+`--verify-provenance` additionally verifies the GitHub attestation using `gh`.
+
+Public installation downloads `/downloads/install.sh`, `/downloads/version.txt`
+and versioned `/downloads/vX.Y.Z/w-monitor-lite-linux-{amd64,arm64}` plus SHA-256
+inventories from the receiver website. `--public https://your-host` creates an
+anonymous space and prints recovery/management/public links in the Agent itself;
+no Python or GitHub CLI is needed on the monitored host. No self-update is scheduled.
+
+Tag CI builds and signs both static binaries, verifies all four published assets,
+and transfers one fixed deployment inventory using the restricted SSH key. The
+receiver, website downloads and installation commands activate together. The
+dedicated account Cron refreshes cached platform load and optional notifications
+every minute using the active release. CI never receives the tenant database or
+application encryption/SMTP credentials.

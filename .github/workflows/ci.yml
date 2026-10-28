@@ -1,4 +1,4 @@
-name: CI and manual-update releases
+name: Public suite build, release and receiver deployment
 on:
   push:
     branches: [main]
@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: lite-${{ github.workflow }}-${{ github.ref }}
+  group: public-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 jobs:
   build:
@@ -84,14 +84,23 @@ jobs:
           bash -n install.sh
           cp install.sh artifacts/install.sh
           (cd artifacts && sha256sum install.sh > install.sh.sha256)
+      - name: Check and package the independent receiver
+        if: matrix.arch == 'linux-amd64'
+        run: |
+          python3 -m venv /tmp/receiver-check
+          /tmp/receiver-check/bin/python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: --retries 2 --timeout 10 -r server/requirements.lock
+          /tmp/receiver-check/bin/python -m pip check
+          python3 -m compileall -q server ops
+          node --check server/web/app.js
+          python3 ops/package_server.py
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: lite-${{ matrix.arch }}
+          name: public-${{ matrix.arch }}
           path: artifacts/*
           if-no-files-found: error
           retention-days: 14
   release:
-    if: startsWith(github.ref, 'refs/tags/') && github.repository == 'agi-wang/w-monitor-lite'
+    if: startsWith(github.ref, 'refs/tags/') && github.repository == 'agi-wang/w-monitor-public'
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -105,13 +114,13 @@ jobs:
       # No source checkout or artifact execution occurs in the privileged job.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: lite-*
+          pattern: public-*
           path: release
           merge-multiple: true
       - name: Verify expected asset inventory
         run: |
-          test "$(find release -maxdepth 1 -type f | wc -l)" -eq 6
-          (cd release && sha256sum -c w-monitor-lite-linux-amd64.sha256 && sha256sum -c w-monitor-lite-linux-arm64.sha256 && sha256sum -c install.sh.sha256)
+          test "$(find release -maxdepth 1 -type f | wc -l)" -eq 8
+          (cd release && sha256sum -c w-monitor-lite-linux-amd64.sha256 && sha256sum -c w-monitor-lite-linux-arm64.sha256 && sha256sum -c install.sh.sha256 && sha256sum -c w-monitor-public-server.zip.sha256)
       - id: attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
@@ -128,3 +137,62 @@ jobs:
         run: |
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           gh release create "$RELEASE_TAG" release/* --repo "$GH_REPO" --verify-tag --title "$RELEASE_TAG" --generate-notes
+  deploy-receiver:
+    if: startsWith(github.ref, 'refs/tags/') && github.repository == 'agi-wang/w-monitor-public'
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: public-production
+    concurrency:
+      group: public-receiver-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      # No source checkout and no execution of downloaded application code.
+      - name: Verify the published receiver and deploy to its dedicated account
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          DEPLOY_HOST: ${{ vars.PUBLIC_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.PUBLIC_DEPLOY_USER }}
+          DEPLOY_KEY: ${{ secrets.PUBLIC_DEPLOY_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.PUBLIC_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
+          [[ "$DEPLOY_USER" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]
+          test -n "$DEPLOY_KEY" && test -n "$DEPLOY_KNOWN_HOSTS"
+          temporary=$(mktemp -d)
+          trap 'rm -rf -- "$temporary"' EXIT
+          chmod 700 "$temporary"
+          mkdir "$temporary/assets"
+          gh release download "$RELEASE_TAG" --repo "$GH_REPO" --dir "$temporary/assets"
+          test "$(find "$temporary/assets" -maxdepth 1 -type f | wc -l)" -eq 9
+          for asset in w-monitor-public-server.zip w-monitor-lite-linux-amd64 w-monitor-lite-linux-arm64 install.sh; do
+            (cd "$temporary/assets" && sha256sum -c "$asset.sha256")
+            gh attestation verify "$temporary/assets/$asset" --bundle "$temporary/assets/provenance.jsonl" \
+              --repo "$GH_REPO" --source-ref "refs/tags/$RELEASE_TAG" --signer-workflow "$GH_REPO/.github/workflows/ci.yml"
+          done
+          chmod 644 "$temporary/assets/"*
+          TZ=UTC touch -t 202601010000 "$temporary/assets/"*
+          (cd "$temporary/assets" && zip -q -X -0 "$temporary/delivery.zip" ./*)
+          sha=$(sha256sum "$temporary/delivery.zip" | cut -d' ' -f1)
+          [[ "$sha" =~ ^[a-f0-9]{64}$ ]]
+          umask 077
+          printf '%s\n' "$DEPLOY_KEY" > "$temporary/identity"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$temporary/known_hosts"
+          ssh -i "$temporary/identity" -o KexAlgorithms=diffie-hellman-group14-sha256 -c aes128-ctr -o BatchMode=yes -o ConnectTimeout=10 \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$temporary/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" "deploy $RELEASE_TAG $sha" < "$temporary/delivery.zip"
+          curl -fsS --proto '=https' --tlsv1.2 --tls-max 1.2 --max-time 20 --retry 2 \
+            https://monitor.20290708.xyz/health > "$temporary/health.json"
+          python3 -c 'import json,os,sys; h=json.load(open(sys.argv[1])); assert h["release_tag"] == os.environ["RELEASE_TAG"] and h["host_control_enabled"] is False and h["cache"] == "redis"' "$temporary/health.json"
+          mkdir "$temporary/website"
+          for file in w-monitor-lite-linux-amd64 w-monitor-lite-linux-amd64.sha256 w-monitor-lite-linux-arm64 w-monitor-lite-linux-arm64.sha256 install.sh install.sh.sha256; do
+            curl -fsS --proto '=https' --tlsv1.2 --tls-max 1.2 --max-time 90 --retry 2 \
+              "https://monitor.20290708.xyz/downloads/$RELEASE_TAG/$file" -o "$temporary/website/$file"
+          done
+          (cd "$temporary/website" && sha256sum -c w-monitor-lite-linux-amd64.sha256 && sha256sum -c w-monitor-lite-linux-arm64.sha256 && sha256sum -c install.sh.sha256)

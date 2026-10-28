@@ -39,11 +39,29 @@ const MAX_RESPONSE: usize = 1024 * 1024;
 )]
 struct Args {
     /// Owner-only JSON config; contains endpoint_url, auth_token and optional agent_id/interval.
-    #[arg(long)]
+    #[arg(long, default_value_os_t = default_config_path())]
     config: PathBuf,
+    /// Fixed receiver URL. Used with --key to configure this device.
+    #[arg(long, default_value = "https://monitor.20290708.xyz/api/v1/report")]
+    endpoint: String,
+    /// Registration credential; saved privately before starting collection.
+    #[arg(long)]
+    key: Option<String>,
+    /// Create an anonymous space and public page on this HTTPS origin.
+    #[arg(long, conflicts_with = "key")]
+    public: Option<String>,
+    #[arg(long, default_value = "en", value_parser = ["en", "zh-CN"])]
+    language: String,
     /// Explicitly permit loopback HTTP for local development only.
     #[arg(long)]
     allow_local_http: bool,
+}
+
+fn default_config_path() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config/w-monitor-public/agent.json")
 }
 
 fn read_config(path: &Path) -> Result<Value> {
@@ -78,6 +96,10 @@ fn persist_config(path: &Path, expected: &str, next: &str, id: &str) -> Result<(
     }
     value["auth_token"] = json!(next);
     value["agent_id"] = json!(id);
+    write_config(path, &value)
+}
+
+fn write_config(path: &Path, value: &Value) -> Result<()> {
     let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     let mut file = OpenOptions::new()
         .write(true)
@@ -85,7 +107,7 @@ fn persist_config(path: &Path, expected: &str, next: &str, id: &str) -> Result<(
         .mode(0o600)
         .open(&temp)?;
     let result = (|| -> Result<()> {
-        file.write_all(&serde_json::to_vec_pretty(&value)?)?;
+        file.write_all(&serde_json::to_vec_pretty(value)?)?;
         file.sync_all()?;
         std::fs::rename(&temp, path)?;
         Ok(())
@@ -96,23 +118,135 @@ fn persist_config(path: &Path, expected: &str, next: &str, id: &str) -> Result<(
     result
 }
 
+async fn public_setup(origin: &str, language: &str) -> Result<Value> {
+    let url = url::Url::parse(origin)?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        bail!("Anonymous setup requires a fixed HTTPS origin");
+    }
+    let origin = origin.trim_end_matches('/');
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(15))
+        .connect_timeout(Duration::from_secs(5))
+        .build()?;
+    let response = client
+        .get(format!("{origin}/api/session"))
+        .header("Accept-Language", language)
+        .send()
+        .await?;
+    let cookie = response
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find_map(|v| {
+            v.split(';')
+                .next()
+                .filter(|v| v.starts_with("__Host-wm_public=wms_"))
+                .map(str::to_owned)
+        })
+        .context("Missing setup session cookie")?;
+    let session = response_json(response).await?;
+    let csrf = session["csrf"]
+        .as_str()
+        .context("Missing setup CSRF token")?;
+    // Creating a space is never retried automatically: a lost response may
+    // already have created ownership that only its recovery key can restore.
+    let response = client.post(format!("{origin}/api/spaces/create"))
+        .header("Origin", origin).header("Cookie", cookie).header("X-CSRF-Token", csrf)
+        .header("Accept-Language", language)
+        .json(&json!({"title": SystemInfo::detect().hostname.chars().take(80).collect::<String>(), "auto_public_page": true}))
+        .send().await?;
+    let result = response_json(response).await?;
+    for (field, prefix, size) in [("recovery", "wmr_", 64), ("bootstrap_key", "wmb_", 64)] {
+        let value = result[field].as_str().context("Missing setup credential")?;
+        if !value.starts_with(prefix)
+            || value.len() != prefix.len() + size
+            || !value[prefix.len()..]
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            bail!("Invalid setup credential");
+        }
+    }
+    for (field, path) in [
+        ("manage_url", "/manage/wm1_"),
+        ("status_url", "/status/wm1_"),
+    ] {
+        let value = result[field].as_str().context("Missing setup link")?;
+        let link = url::Url::parse(value)?;
+        if link.origin() != url.origin()
+            || !link.path().starts_with(path)
+            || !link.username().is_empty()
+            || link.password().is_some()
+            || link.query().is_some()
+            || link.fragment().is_some()
+        {
+            bail!("Invalid setup link");
+        }
+    }
+    if result["ingest_url"].as_str() != Some(format!("{origin}/api/v1/report").as_str()) {
+        bail!("Invalid report endpoint");
+    }
+    let labels = if language == "zh-CN" {
+        ["私密恢复口令（请保存）", "管理地址", "公开页面"]
+    } else {
+        [
+            "Private recovery key (save securely)",
+            "Management URL",
+            "Public status URL",
+        ]
+    };
+    for (label, field) in labels
+        .into_iter()
+        .zip(["recovery", "manage_url", "status_url"])
+    {
+        println!("{}: {}", label, result[field].as_str().unwrap());
+    }
+    std::io::stdout().flush()?;
+    Ok(
+        json!({"endpoint_url": result["ingest_url"], "auth_token": result["bootstrap_key"], "interval": 60000, "compress_reports": true}),
+    )
+}
+
 async fn post_report(
     client: &reqwest::Client,
     endpoint: &url::Url,
     token: &str,
     body: &[u8],
+    compressed: bool,
 ) -> Result<Value> {
     // No redirect can forward a credential. The configured origin is the only
     // telemetry destination, and every request has a whole-request deadline.
-    let response = client
+    let request = client
         .post(endpoint.clone())
         .bearer_auth(token)
-        .header("Content-Type", "application/json")
-        .body(body.to_vec())
-        .send()
-        .await?;
+        .header("Content-Type", "application/json");
+    let request = if compressed {
+        request.header("Content-Encoding", "gzip")
+    } else {
+        request
+    };
+    let response = request.body(body.to_vec()).send().await?;
     if !response.status().is_success() {
         bail!("Report rejected: HTTP {}", response.status().as_u16());
+    }
+    response_json(response).await
+}
+
+async fn response_json(response: reqwest::Response) -> Result<Value> {
+    if !response.status().is_success() {
+        bail!(
+            "Receiver rejected request: HTTP {}",
+            response.status().as_u16()
+        );
     }
     if response
         .content_length()
@@ -145,6 +279,84 @@ async fn main() -> Result<()> {
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
+    if let Some(origin) = &args.public {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
+        let metadata = std::fs::symlink_metadata(parent)?;
+        if !metadata.is_dir()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o077 != 0
+        {
+            bail!("Config directory must be owned by the current user with mode 0700");
+        }
+        // Reserve before making any remote writes; an existing device config
+        // must never silently create a second anonymous space.
+        let reservation = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&args.config)?;
+        let setup = public_setup(origin, &args.language).await;
+        drop(reservation);
+        match setup {
+            Ok(value) => write_config(&args.config, &value)?,
+            Err(_) => {
+                std::fs::remove_file(&args.config)?;
+                bail!("Anonymous setup failed. Keep any recovery key printed above; setup was not retried.");
+            }
+        }
+    }
+    if let Some(key) = &args.key {
+        if key.is_empty() || key.len() > 512 || key.chars().any(char::is_control) {
+            bail!("Invalid registration key");
+        }
+        let endpoint = url::Url::parse(&args.endpoint)?;
+        let local_http = args.allow_local_http
+            && endpoint.scheme() == "http"
+            && matches!(
+                endpoint.host_str(),
+                Some("127.0.0.1" | "[::1]" | "localhost")
+            );
+        if !(endpoint.scheme() == "https" || local_http)
+            || endpoint.host_str().is_none()
+            || !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+        {
+            bail!("Endpoint requires HTTPS without credentials, query or fragment");
+        }
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
+        let metadata = std::fs::symlink_metadata(parent)?;
+        if !metadata.is_dir()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o077 != 0
+        {
+            bail!("Config directory must be owned by the current user with mode 0700");
+        }
+        let mut value = match std::fs::symlink_metadata(&args.config) {
+            Ok(_) => read_config(&args.config)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
+            Err(error) => return Err(error.into()),
+        };
+        value["endpoint_url"] = json!(args.endpoint);
+        value["auth_token"] = json!(key);
+        value["compress_reports"] = json!(true);
+        write_config(&args.config, &value)?;
+        // Remove the registration key from the long-running process arguments.
+        use std::os::unix::process::CommandExt;
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command.arg("--config").arg(&args.config);
+        if args.allow_local_http {
+            command.arg("--allow-local-http");
+        }
+        return Err(command.exec().into());
+    }
     let parent_metadata = std::fs::metadata(parent)?;
     if !parent_metadata.is_dir()
         || parent_metadata.uid() != unsafe { libc::geteuid() }
@@ -191,6 +403,9 @@ async fn main() -> Result<()> {
         .as_u64()
         .unwrap_or(60_000)
         .clamp(10_000, 1_800_000);
+    // Enabled by Public configurations; existing receiver configurations retain
+    // their transport until a local operator explicitly enables compression.
+    let compress_reports = config["compress_reports"].as_bool().unwrap_or(false);
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
@@ -314,9 +529,22 @@ async fn main() -> Result<()> {
         if bytes.len() > MAX_REPORT {
             bail!("Collected report exceeds 8 MiB; refusing an unbounded upload");
         }
+        let (bytes, compressed) = if compress_reports && bytes.len() >= 4096 {
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(&bytes)?;
+            let encoded = encoder.finish()?;
+            if encoded.len() < bytes.len() {
+                (encoded, true)
+            } else {
+                (bytes, false)
+            }
+        } else {
+            (bytes, false)
+        };
         let mut response = None;
         for attempt in 0..=2 {
-            match post_report(&client, &endpoint, &token, &bytes).await {
+            match post_report(&client, &endpoint, &token, &bytes, compressed).await {
                 Ok(value) => {
                     response = Some(value);
                     break;

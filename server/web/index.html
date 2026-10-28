@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>W Monitor Public · 只读监控</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/i18n.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="W Monitor Public 首页"><span class="mark">w.</span><span>Monitor <b>Public</b></span></a>
+    <div class="header-actions"><span class="readonly"><span class="dot"></span>只读监控</span><button id="login" class="button" hidden>登录领用</button><button id="logout" class="quiet" hidden>退出</button></div>
+  </header>
+  <main id="main">
+    <div id="notice" role="alert" hidden></div>
+    <section id="welcome" class="welcome" hidden>
+      <div class="eyebrow">W MONITOR / PUBLIC</div>
+      <h1>你的设备，<br>一个私密空间。</h1>
+      <p class="intro">从一台主机开始，集中查看运行状态。可以保持匿名，也可以在登录后领用空间。</p>
+      <div class="welcome-actions"><button id="quick-deploy" class="button primary">一键部署单台设备 <span aria-hidden="true">↗</span></button><button id="create-space" class="button">新建监控空间 <span aria-hidden="true">↗</span></button><button id="show-restore" class="button">使用恢复口令</button></div>
+      <div class="principles"><div><span>01</span><strong>接入设备</strong><p>运行公开源码的 Lite Agent，采集系统权限允许的只读数据。</p></div><div><span>02</span><strong>保存口令</strong><p>换浏览器或电脑，用私密恢复口令找回同一组设备。</p></div><div><span>03</span><strong>按需分享</strong><p>选择设备创建多个只读页面，随时停用或更换链接。</p></div></div>
+    </section>
+    <section id="dashboard" hidden>
+      <div class="page-heading"><div><div id="space-kind" class="eyebrow">监控空间</div><h1 id="space-title">我的设备</h1><p class="subtle">设备完整采集数据仅在你的私密空间中可见。</p></div><div class="actions"><button id="claim" class="button" hidden>领用到登录账号</button><button id="add-device" class="button primary">接入设备</button></div></div>
+      <div class="toolbar"><div class="tabs" role="tablist" aria-label="监控空间视图"><button id="devices-tab" role="tab" aria-selected="true">设备 <span id="device-count">0</span></button><button id="pages-tab" role="tab" aria-selected="false">分享页 <span id="page-count">0</span></button></div><span id="connection" class="connection" aria-live="polite">连接中</span></div>
+      <section id="devices-panel" role="tabpanel" aria-labelledby="devices-tab"><div id="device-list"></div></section>
+      <section id="pages-panel" role="tabpanel" aria-labelledby="pages-tab" hidden><div class="section-heading"><p class="subtle">每个页面独立选择设备，公开名称、在线状态和基础资源占用。</p><button id="new-page" class="button">新建分享页</button></div><div id="page-list"></div></section>
+      <details class="space-settings"><summary>空间与凭据</summary><div class="settings-row"><label>已领用的空间<select id="space-select"><option>当前空间</option></select></label><div class="actions"><button id="rotate-recovery" class="button">轮换恢复口令</button><button id="restore-another" class="button">恢复其他空间</button><button id="new-space" class="quiet">新建空间</button></div></div><p class="subtle">恢复口令等同于空间钥匙，请仅保存在你信任的地方。公开分享链接不能用于恢复空间。</p></details>
+      <details class="space-settings" id="email-settings"><summary>邮箱与通知</summary><div class="settings-row"><div><strong id="bound-email">尚未绑定邮箱</strong><p id="email-help" class="subtle">正常登录后，可以绑定账号中已验证的邮箱。</p><label class="check"><input id="email-enabled" type="checkbox">接收此后的设备离线与恢复通知</label></div><div class="actions"><button id="bind-email" class="button">绑定已验证邮箱</button><button id="save-email" class="button">保存通知设置</button><button id="unbind-email" class="quiet">解除绑定</button></div></div><p class="subtle">邮箱仅用于你主动开启的通知，不会出现在公开分享页中。首次检查建立状态基线，后续状态变化才发送通知。</p></details>
+    </section>
+    <section id="public-page" hidden><div class="page-heading"><div><div class="eyebrow">PUBLIC STATUS</div><h1 id="public-title">设备状态</h1><p class="subtle">此页面只展示发布者选择公开的运行数据。</p></div><span id="public-connection" class="connection" aria-live="polite">连接中</span></div><div id="public-list"></div></section>
+    <div id="loading" class="empty">正在读取监控空间…</div>
+    <section class="platform-load" aria-labelledby="load-title"><div class="section-heading"><h2 id="load-title">平台当前负载</h2><span class="connection">每分钟更新</span></div><div class="load-grid"><div><span>在线 / 接入设备</span><strong id="load-devices">—</strong></div><div><span>应用请求 / 秒</span><strong id="load-rps">—</strong></div><div><span>平均处理耗时</span><strong id="load-latency">—</strong></div><div><span>服务端错误率</span><strong id="load-errors">—</strong></div><div><span>Redis 已用内存</span><strong id="load-redis">—</strong></div><div><span>宿主机负载 · 1 分钟</span><strong id="load-host">—</strong></div></div><p id="load-stamp" class="subtle">等待统计。系统负载来自共享宿主机，不代表本账号 CPU 占用。</p></section>
+  </main>
+  <footer><span>只读采集 · 无远程控制 · Agent 仅手动更新</span><a href="https://github.com/agi-wang/w-monitor-public" target="_blank" rel="noopener noreferrer">查看开源代码 ↗</a></footer>
+  <dialog id="quick-dialog"><div class="dialog-heading"><h2>一键部署单台设备</h2><button class="close" data-close="quick-dialog" aria-label="关闭">×</button></div><p class="subtle">在目标 Linux 设备执行下方命令。安装器验证发布来源后，会创建匿名空间和公开页，在终端打印私密恢复 Key 与访问地址，并启动 Lite Agent。</p><label>部署命令<textarea id="quick-command" rows="5" readonly spellcheck="false"></textarea></label><button id="copy-quick" class="button primary">复制命令</button><p class="subtle">此流程会自动公开首台设备的名称、状态和基础资源占用。完整采集数据保持私有；恢复 Key 请勿分享。需预先安装 curl、Python 3 和 GitHub CLI，更新仍须手动执行。</p></dialog>
+  <dialog id="restore-dialog"><form id="restore-form"><div class="dialog-heading"><h2>恢复监控空间</h2><button type="button" class="close" data-close="restore-dialog" aria-label="关闭">×</button></div><p class="subtle">输入此前保存的私密口令。恢复后，设备会归入同一空间。</p><label>恢复口令<input id="restore-key" type="password" autocomplete="off" spellcheck="false" required maxlength="68" placeholder="wmr_…"></label><button class="button primary" type="submit">恢复空间</button></form></dialog>
+  <dialog id="recovery-dialog"><div class="dialog-heading"><h2>保存新的恢复口令</h2></div><p id="recovery-explanation" class="subtle">只显示这一次。保存后，你可以跨浏览器找回这个空间。</p><label>私密恢复口令<textarea id="recovery-key" rows="3" readonly spellcheck="false"></textarea></label><div class="actions"><button id="copy-recovery" class="button">复制口令</button><button id="saved-recovery" class="button primary">已保存，进入空间</button></div></dialog>
+  <dialog id="install-dialog"><div class="dialog-heading"><h2>接入一台设备</h2><button class="close" data-close="install-dialog" aria-label="关闭">×</button></div><p class="subtle">Linux AMD64 / ARM64。先安装 curl、Python 3 和 GitHub CLI；安装器会验证发布来源。请以你允许进行采集的系统用户运行。</p><label>安装与启动命令<textarea id="install-command" rows="7" readonly spellcheck="false"></textarea></label><div class="actions"><button id="generate-bootstrap" class="button">生成新的接入凭据</button><button id="copy-install" class="button primary">复制命令</button></div><p class="subtle">命令含私密接入凭据，请勿公开。轮换接入凭据不影响已注册设备；Agent 保持前台运行，更新须在本机手动执行。</p></dialog>
+  <dialog id="page-dialog"><form id="page-form"><div class="dialog-heading"><h2 id="page-dialog-title">新建分享页</h2><button type="button" class="close" data-close="page-dialog" aria-label="关闭">×</button></div><label>页面名称<input id="page-title" required maxlength="80" placeholder="例如：Page One"></label><fieldset><legend>选择要公开的设备</legend><div id="page-devices" class="selections"></div></fieldset><label class="check"><input id="page-enabled" type="checkbox" checked>启用公开访问</label><p class="subtle">公开页隐藏设备标识、IP、日志和完整采集数据。</p><button type="submit" class="button primary">保存分享页</button></form></dialog>
+  <dialog id="report-dialog" class="report-dialog"><div class="dialog-heading"><h2 id="report-title">只读采集快照</h2><button class="close" data-close="report-dialog" aria-label="关闭">×</button></div><p class="subtle">数据来自 Agent 上一次完整上报。此视图没有主机操作功能。</p><pre id="report-content" tabindex="0"></pre></dialog>
+</body>
+</html>
