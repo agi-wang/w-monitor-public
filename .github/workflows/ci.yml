@@ -173,6 +173,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           DEPLOY_HOST: ${{ vars.PUBLIC_DEPLOY_HOST }}
           PUBLIC_ORIGIN: ${{ vars.PUBLIC_ORIGIN }}
+          PUBLIC_ASSETS_ORIGIN: ${{ vars.PUBLIC_ASSETS_ORIGIN }}
           DEPLOY_TRANSPORT: ${{ vars.PUBLIC_DEPLOY_TRANSPORT }}
           PUBLIC_DEPLOY_PANEL_URL: ${{ vars.PUBLIC_DEPLOY_PANEL_URL }}
           PUBLIC_DEPLOY_USER: ${{ vars.PUBLIC_DEPLOY_USER }}
@@ -210,6 +211,15 @@ jobs:
           chmod 644 "$temporary/assets/"*
           TZ=UTC touch -t 202601010000 "$temporary/assets/"*
           (cd "$temporary/assets" && zip -q -X -0 "$temporary/delivery.zip" ./*)
+          if [ -n "$PUBLIC_ASSETS_ORIGIN" ]; then
+            [[ "$PUBLIC_ASSETS_ORIGIN" =~ ^https://[A-Za-z0-9.-]+$ ]]
+            for file in app.js style.css; do
+              asset_sha=$(sha256sum "server/web/$file" | cut -d' ' -f1)
+              curl -fsS --proto '=https' --tlsv1.2 --max-time 30 --retry 2 \
+                "$PUBLIC_ASSETS_ORIGIN/assets/$asset_sha/$file" -o "$temporary/$file"
+              cmp "server/web/$file" "$temporary/$file"
+            done
+          fi
           sha=$(sha256sum "$temporary/delivery.zip" | cut -d' ' -f1)
           [[ "$sha" =~ ^[a-f0-9]{64}$ ]]
           umask 077

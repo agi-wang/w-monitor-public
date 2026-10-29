@@ -273,7 +273,9 @@ Each merged commit automatically publishes JS/CSS assets. The build retains
 content-addressed assets from release tags so regions can deploy independently.
 GitHub CI also builds this output before a release passes its checks.
 
-Set the receiver's private `static_assets_url` to the Pages HTTPS origin, then
+Set repository variable `PUBLIC_ASSETS_ORIGIN` to the Pages HTTPS origin so
+GitHub verifies the exact tag's CDN asset bytes before receiver activation.
+Set the receiver's private `static_assets_url` to the same origin, then
 restart its application. Regional HTML uses hashed CDN URLs plus SHA-256
 Subresource Integrity; CSP allows only that configured asset origin. Browser
 language, authentication, API calls, installer parameters and data remain on the
