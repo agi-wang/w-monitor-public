@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "W Monitor Public API",
-    "version": "1.2.0",
+    "version": "1.3.0",
     "description": "Independent read-only telemetry receiver. No host-control APIs, update executors or private W Monitor dependencies. Recovery and registration secrets are shown once and persisted only as SHA-256 digests. Monitoring-space management does not operate monitored hosts. Dynamic telemetry lives only in encrypted Redis; SQLite holds durable user/space metadata, credential digests and notification delivery bookkeeping. Missing Redis is unknown, never a SQLite telemetry fallback. AES-GCM addresses are purpose-bound and never replace authentication. The backend negotiates zh-CN/en with Accept-Language and returns Content-Language; unsupported languages fall back to en. User/host text is preserved."
   },
   "servers": [
@@ -52,7 +52,8 @@
           },
           "collectors": {
             "type": "object",
-            "additionalProperties": true
+            "additionalProperties": true,
+            "description": "Unknown collectors tolerated. New network fields are documented by NetworkAccountingV2. Legacy network totals without explicit default-route evidence are unknown; all per-interface data remain private."
           },
           "metadata": {
             "type": "object",
@@ -147,6 +148,14 @@
                 "history_ref": {
                   "type": "string",
                   "description": "Public snapshots only: page-bound encrypted routing reference for historical public metrics."
+                },
+                "network_accounting_scope": {
+                  "type": "string",
+                  "enum": [
+                    "default_route_interfaces",
+                    "unavailable"
+                  ],
+                  "description": "Network rates count default-route logical interfaces only. Not destination-classified Internet traffic; null when route evidence is unavailable."
                 }
               },
               "additionalProperties": true
@@ -367,6 +376,93 @@
           },
           "aggregation": {
             "const": "sample_weighted_mean"
+          },
+          "network_accounting_scope": {
+            "type": "string",
+            "const": "default_route_interfaces",
+            "description": "Legacy all-interface network samples are omitted; non-network historical samples remain."
+          }
+        },
+        "additionalProperties": true
+      },
+      "NetworkAccountingV2": {
+        "type": "object",
+        "description": "New Agent network accounting; legacy reports remain accepted but unproven aggregate network totals are not displayed or retained as egress. Internal groups are overlapping interface observations, not deduplicated LAN bandwidth.",
+        "properties": {
+          "accounting_version": {
+            "const": 2
+          },
+          "accounting_scope": {
+            "enum": [
+              "default_route_interfaces",
+              "unavailable"
+            ]
+          },
+          "default_route_interfaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "traffic_groups": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "received_bytes": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "transmitted_bytes": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "received_bytes_per_sec": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "transmitted_bytes_per_sec": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "interface_count": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "interfaces": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "traffic_class": {
+                  "enum": [
+                    "egress",
+                    "lan",
+                    "loopback",
+                    "container",
+                    "tunnel",
+                    "unknown"
+                  ]
+                }
+              },
+              "additionalProperties": true
+            }
           }
         },
         "additionalProperties": true

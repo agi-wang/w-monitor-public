@@ -753,6 +753,10 @@ async fn main() -> Result<()> {
                     let data = value.get("data").unwrap_or(value);
                     let fields: &[&str] = if key == "network" {
                         &[
+                            "accounting_version",
+                            "accounting_scope",
+                            "default_route_interfaces",
+                            "traffic_groups",
                             "total_received_bytes_per_sec",
                             "total_transmitted_bytes_per_sec",
                             "total_received_bytes",

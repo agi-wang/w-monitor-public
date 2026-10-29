@@ -355,6 +355,146 @@ pub(crate) fn collect_disk_io() -> serde_json::Value {
     serde_json::json!({ "devices": [] })
 }
 
+fn default_network_routes() -> Option<HashSet<String>> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut routes = HashSet::new();
+        let mut available = false;
+        for (path, ipv6) in [("/proc/net/route", false), ("/proc/net/ipv6_route", true)] {
+            let Ok(raw) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            available = true;
+            let mut minimum = u64::MAX;
+            let mut family = HashSet::new();
+            for line in raw.lines() {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                let parsed = if ipv6
+                    && fields.len() >= 10
+                    && fields[0] == "00000000000000000000000000000000"
+                    && fields[1] == "00"
+                    && fields[2] == "00000000000000000000000000000000"
+                    && fields[3] == "00"
+                {
+                    u64::from_str_radix(fields[8], 16)
+                        .ok()
+                        .zip(u64::from_str_radix(fields[5], 16).ok())
+                        .map(|(flags, metric)| (fields[9], flags, metric))
+                } else if !ipv6
+                    && fields.len() >= 8
+                    && fields[1] == "00000000"
+                    && fields[7] == "00000000"
+                {
+                    u64::from_str_radix(fields[3], 16)
+                        .ok()
+                        .zip(fields[6].parse::<u64>().ok())
+                        .map(|(flags, metric)| (fields[0], flags, metric))
+                } else {
+                    None
+                };
+                let Some((name, flags, metric)) = parsed else {
+                    continue;
+                };
+                if flags & 1 == 0 || flags & 0x200 != 0 || name.is_empty() || name.contains('/') {
+                    continue;
+                }
+                if metric < minimum {
+                    family.clear();
+                    minimum = metric;
+                }
+                if metric == minimum {
+                    family.insert(name.to_owned());
+                }
+            }
+            routes.extend(family);
+        }
+        // A bridge/bond and its enslaved interface must not both be counted.
+        let selected = routes.clone();
+        routes.retain(|name| {
+            let mut current = name.clone();
+            for _ in 0..8 {
+                let Ok(master) = std::fs::read_link(format!("/sys/class/net/{current}/master"))
+                else {
+                    break;
+                };
+                let Some(parent) = master.file_name().and_then(|value| value.to_str()) else {
+                    break;
+                };
+                if selected.contains(parent) {
+                    return false;
+                }
+                current = parent.to_owned();
+            }
+            !selected.iter().any(|parent| {
+                parent != name
+                    && std::path::Path::new(&format!("/sys/class/net/{parent}/lower_{name}"))
+                        .exists()
+            })
+        });
+        available.then_some(routes)
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
+}
+
+fn network_traffic_class(name: &str, routes: Option<&HashSet<String>>) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    if matches!(lower.as_str(), "lo" | "lo0") || lower.starts_with("loopback") {
+        return "loopback";
+    }
+    if [
+        "docker", "veth", "br-", "virbr", "cni", "flannel", "cali", "ifb",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+    {
+        return "container";
+    }
+    if [
+        "tun",
+        "tap",
+        "utun",
+        "wg",
+        "tailscale",
+        "zt",
+        "easytier",
+        "ppp",
+        "gre",
+        "ip6tnl",
+        "sit",
+        "vxlan",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+    {
+        return "tunnel";
+    }
+    #[cfg(target_os = "linux")]
+    if std::path::Path::new(&format!("/sys/class/net/{name}/tun_flags")).exists()
+        || std::fs::read_to_string(format!("/sys/class/net/{name}/type"))
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .is_some_and(|kind| matches!(kind, 768 | 769 | 776 | 778 | 65534))
+    {
+        return "tunnel";
+    }
+    if routes.is_some_and(|routes| routes.contains(name)) {
+        return "egress";
+    }
+    #[cfg(target_os = "linux")]
+    if ["bridge", "brport"]
+        .iter()
+        .any(|kind| std::path::Path::new(&format!("/sys/class/net/{name}/{kind}")).exists())
+    {
+        return "container";
+    }
+    if routes.is_some() {
+        "lan"
+    } else {
+        "unknown"
+    }
+}
+
 pub(crate) fn collect_network(
     networks: &Arc<Mutex<Networks>>,
     network_rate_cache: &Arc<Mutex<NetworkRateCache>>,
@@ -362,47 +502,52 @@ pub(crate) fn collect_network(
     let n = networks.lock();
     let now = Instant::now();
     let mut rate_cache = network_rate_cache.lock();
-    let mut total_rx_speed = 0.0;
-    let mut total_tx_speed = 0.0;
-    let iface_list: Vec<serde_json::Value> = n
-        .iter()
-        .map(|(name, data)| {
-            let ip_addrs: Vec<String> = data
-                .ip_networks()
-                .iter()
-                .map(|ip| ip.addr.to_string())
-                .collect();
-            let received_bytes = data.total_received();
-            let transmitted_bytes = data.total_transmitted();
-            let (rx_speed, tx_speed) =
-                rate_cache.calculate(name, received_bytes, transmitted_bytes, now);
-            total_rx_speed += rx_speed;
-            total_tx_speed += tx_speed;
-            serde_json::json!({
-                "name": name,
-                "ip_addresses": ip_addrs,
-                "mac_address": data.mac_address().to_string(),
-                "received_bytes": received_bytes,
-                "transmitted_bytes": transmitted_bytes,
-                "received_bytes_per_sec": rx_speed,
-                "transmitted_bytes_per_sec": tx_speed,
-                "received_packets": data.total_packets_received(),
-                "transmitted_packets": data.total_packets_transmitted(),
-                "received_errors": data.total_errors_on_received(),
-                "transmitted_errors": data.total_errors_on_transmitted(),
-            })
+    let routes = default_network_routes();
+    let mut groups = serde_json::Map::new();
+    for class in [
+        "egress",
+        "lan",
+        "loopback",
+        "container",
+        "tunnel",
+        "unknown",
+    ] {
+        groups.insert(class.to_owned(), serde_json::json!({"received_bytes":0_u64,"transmitted_bytes":0_u64,"received_bytes_per_sec":0.0,"transmitted_bytes_per_sec":0.0,"interface_count":0}));
+    }
+    let mut default_interfaces = Vec::new();
+    let interfaces: Vec<_> = n.iter().map(|(name, data)| {
+        let class = network_traffic_class(name, routes.as_ref());
+        let received = data.total_received();
+        let transmitted = data.total_transmitted();
+        let (rx, tx) = rate_cache.calculate(name, received, transmitted, now);
+        let group = groups.get_mut(class).unwrap();
+        group["received_bytes"] = serde_json::json!(group["received_bytes"].as_u64().unwrap().saturating_add(received));
+        group["transmitted_bytes"] = serde_json::json!(group["transmitted_bytes"].as_u64().unwrap().saturating_add(transmitted));
+        group["received_bytes_per_sec"] = serde_json::json!(group["received_bytes_per_sec"].as_f64().unwrap() + rx);
+        group["transmitted_bytes_per_sec"] = serde_json::json!(group["transmitted_bytes_per_sec"].as_f64().unwrap() + tx);
+        group["interface_count"] = serde_json::json!(group["interface_count"].as_u64().unwrap() + 1);
+        if class == "egress" { default_interfaces.push(name.clone()); }
+        serde_json::json!({
+            "name":name,"traffic_class":class,
+            "ip_addresses":data.ip_networks().iter().map(|ip|ip.addr.to_string()).collect::<Vec<_>>(),
+            "mac_address":data.mac_address().to_string(),
+            "received_bytes":received,"transmitted_bytes":transmitted,
+            "received_bytes_per_sec":rx,"transmitted_bytes_per_sec":tx,
+            "received_packets":data.total_packets_received(),"transmitted_packets":data.total_packets_transmitted(),
+            "received_errors":data.total_errors_on_received(),"transmitted_errors":data.total_errors_on_transmitted(),
         })
-        .collect();
-
-    let total_rx: u64 = n.values().map(|d| d.total_received()).sum();
-    let total_tx: u64 = n.values().map(|d| d.total_transmitted()).sum();
-
+    }).collect();
+    default_interfaces.sort();
+    let available = !default_interfaces.is_empty();
+    let egress = &groups["egress"];
     serde_json::json!({
-        "total_received_bytes": total_rx,
-        "total_transmitted_bytes": total_tx,
-        "total_received_bytes_per_sec": total_rx_speed,
-        "total_transmitted_bytes_per_sec": total_tx_speed,
-        "interfaces": iface_list,
+        "accounting_version":2,"accounting_scope":if available {"default_route_interfaces"} else {"unavailable"},
+        "default_route_interfaces":default_interfaces,
+        "total_received_bytes":if available {egress["received_bytes"].clone()} else {serde_json::Value::Null},
+        "total_transmitted_bytes":if available {egress["transmitted_bytes"].clone()} else {serde_json::Value::Null},
+        "total_received_bytes_per_sec":if available {egress["received_bytes_per_sec"].clone()} else {serde_json::Value::Null},
+        "total_transmitted_bytes_per_sec":if available {egress["transmitted_bytes_per_sec"].clone()} else {serde_json::Value::Null},
+        "traffic_groups":groups,"interfaces":interfaces,
     })
 }
 

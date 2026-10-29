@@ -224,7 +224,7 @@ class MetricHistory:
             raise ValueError("Invalid history retention")
         if fine_step not in (1, 2, 3, 5, 6, 10, 12, 15, 20, 30, 60):
             raise ValueError("History fine step must divide one minute")
-        self.policy = ":".join(map(str, (*retention, fine_step)))
+        self.policy = "network-v2:" + ":".join(map(str, (*retention, fine_step)))
 
     def prefix(self, device):
         return self.namespace + ":history:" + device + ":"
@@ -240,6 +240,9 @@ class MetricHistory:
             slot, means, counts = record[0], list(record[1:6]), list(record[6:])
             if slot in result or slot >= 60 or any(not math.isfinite(mean) or mean < 0 for mean in means):
                 raise ValueError("Invalid history record")
+            if encoded.startswith("wmh1_"):
+                means[3:] = [0.0, 0.0]
+                counts[3:] = [0, 0]
             result[slot] = [means, counts]
         return result
 
@@ -314,7 +317,7 @@ class MetricHistory:
         points = [[timestamp, *(round(sums[i] / counts[i], 6) if counts[i] else None for i in range(5))] for timestamp, (sums, counts) in sorted(buckets.items()) if any(counts)]
         if len(points) > 720:
             raise ValueError("History response exceeds bound")
-        result = {"columns": ["time", *self.fields], "points": points, "from": start, "to": now, "resolution_seconds": step, "retention_seconds": self.retention[tier], "max_retention_seconds": self.retention[2], "refresh_ms": 3000 if tier == 0 else 5000 if tier == 1 else 30000, "storage": "redis", "aggregation": "sample_weighted_mean"}
+        result = {"columns": ["time", *self.fields], "points": points, "from": start, "to": now, "resolution_seconds": step, "retention_seconds": self.retention[tier], "max_retention_seconds": self.retention[2], "refresh_ms": 3000 if tier == 0 else 5000 if tier == 1 else 30000, "storage": "redis", "aggregation": "sample_weighted_mean", "network_accounting_scope": "default_route_interfaces"}
         encoded = self.box.seal_report(purpose, result)
         # Prevent a slow reader from publishing a pre-ingest view after the writer
         # has invalidated it. Coarse views intentionally refresh less frequently.

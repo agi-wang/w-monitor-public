@@ -69,12 +69,14 @@ class SealedData:
             raise ValueError("Invalid report snapshot") from None
 
     def seal_history(self, purpose, raw):
-        return self._seal("wmh1_", purpose, zlib.compress(raw, level=1))
+        return self._seal("wmh2_", purpose + ":network-accounting-v2", zlib.compress(raw, level=1))
 
     def open_history(self, purpose, token):
         try:
             decoder = zlib.decompressobj()
-            raw = decoder.decompress(self._open("wmh1_", purpose, token), 4097)
+            version = "wmh2_" if token.startswith("wmh2_") else "wmh1_"
+            context = purpose + ":network-accounting-v2" if version == "wmh2_" else purpose
+            raw = decoder.decompress(self._open(version, context, token), 4097)
             if len(raw) > 4096 or not decoder.eof or decoder.unused_data:
                 raise ValueError()
             return raw

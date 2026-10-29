@@ -129,7 +129,7 @@ function drawDevices(target, rows, publicView = false) {
   if (!rows.length) { empty(target, publicView ? t("暂无公开设备") : t("等待第一台设备"), publicView ? t("发布者尚未选择设备，或设备已被移除。") : t("点击“接入设备”，在主机上运行 Lite Agent。首次上报后设备会出现在这里。")); return; }
   const table = node("table", undefined, "device-table");
   const head = node("thead"), headRow = node("tr");
-  for (const label of [t("设备 / 最近上报"), t("状态"), "CPU", t("内存"), t("磁盘"), t("网络"), t("设备详情")]) headRow.append(node("th", label));
+  for (const label of [t("设备 / 最近上报"), t("状态"), "CPU", t("内存"), t("磁盘"), t("默认出口"), t("设备详情")]) headRow.append(node("th", label));
   head.append(headRow); table.append(head);
   const body = node("tbody");
   for (const device of rows) {
@@ -150,7 +150,7 @@ function drawDevices(target, rows, publicView = false) {
       if (key === "cpu_percent" && history?.points.length > 1) cell.append(metricPlot(history.points, [key], [label], true, history));
       row.append(cell);
     }
-    const traffic = node("td", undefined, "metric-cell"); traffic.dataset.label = t("网络");
+    const traffic = node("td", undefined, "metric-cell"); traffic.dataset.label = t("默认出口");
     traffic.textContent = `↓ ${networkRate(device.network_rx_bps)} · ↑ ${networkRate(device.network_tx_bps)}`; row.append(traffic);
     const cell = node("td", undefined, "actions-cell"), actions = node("div", undefined, "row-actions");
     actions.append(button(t("查看详情") + " →", openDetails, "details-button"));
@@ -360,7 +360,7 @@ async function openPage(page = null) {
   $("page-dialog").showModal();
 }
 const reportTitles = new Map(Object.entries({ system: "系统信息", cpu: "CPU 与负载", memory: "内存与交换", disk: "磁盘与挂载", disk_io: "磁盘 I/O", process: "进程", network: "网络接口", connections: "网络连接", traffic_flows: "流量明细", sensor: "温度与传感器", mount_health: "挂载健康", gpu: "GPU", docker: "容器", security_posture: "安全检查", login_accounts: "登录与账号", diting_audit: "审计摘要", web_hosts: "网站与证书", project_status: "服务与项目", software_inventory: "软件清单", security_advisories: "安全公告", ping: "延迟探测", traceroute: "网络路径", easytier: "EasyTier", cache_scan: "缓存扫描", vps_pressure: "主机负载", transport_runtime: "上报链路", runtime_access: "采集权限" }));
-const reportLabels = new Map(Object.entries({ hostname: "主机名称", os_name: "操作系统", os_version: "系统版本", kernel_version: "内核版本", architecture: "架构", uptime_seconds: "运行时长", uptime_secs: "运行时长", cpu_count: "CPU 核心", total_memory_bytes: "物理内存", usage_percent: "使用率", total_bytes: "总容量", used_bytes: "已用容量", available_bytes: "可用容量", swap_total_bytes: "交换区容量", swap_used_bytes: "已用交换区", swap_usage_percent: "交换区使用率", cores: "核心数", per_core: "每核心指标", core: "核心", brand: "型号", frequency_mhz: "频率", load_avg: "平均负载", one: "1 分钟", five: "5 分钟", fifteen: "15 分钟", disks: "磁盘列表", mount_point: "挂载点", file_system: "文件系统", processes: "进程列表", pid: "PID", name: "名称", cpu_usage: "CPU 使用率", memory_bytes: "内存占用", containers: "容器列表", status: "状态", available: "可用", reason: "原因", count: "数量", interfaces: "接口列表", address: "地址", local_addr: "本地地址", remote_addr: "远端地址", port: "端口", findings: "检查结果", severity: "级别", message: "详情", data: "数据", capabilities: "能力", agent_version: "Agent 版本", report_seq: "上报序号", expected_interval_ms: "上报间隔", timestamp: "采集时间", version: "协议版本", agent_id: "设备标识", os: "系统", arch: "架构", report_interval_ms: "完整上报间隔" }));
+const reportLabels = new Map(Object.entries({ accounting_scope: "流量统计口径", accounting_version: "统计口径版本", default_route_interfaces: "默认出口接口", traffic_groups: "接口分类观测", traffic_class: "接口分类", egress: "默认出口", lan: "其他局域接口", loopback: "回环", container: "容器与网桥", tunnel: "隧道", unknown: "未分类", received_bytes_per_sec: "下行速率", transmitted_bytes_per_sec: "上行速率", received_bytes: "累计接收", transmitted_bytes: "累计发送", interface_count: "接口数量", hostname: "主机名称", os_name: "操作系统", os_version: "系统版本", kernel_version: "内核版本", architecture: "架构", uptime_seconds: "运行时长", uptime_secs: "运行时长", cpu_count: "CPU 核心", total_memory_bytes: "物理内存", usage_percent: "使用率", total_bytes: "总容量", used_bytes: "已用容量", available_bytes: "可用容量", swap_total_bytes: "交换区容量", swap_used_bytes: "已用交换区", swap_usage_percent: "交换区使用率", cores: "核心数", per_core: "每核心指标", core: "核心", brand: "型号", frequency_mhz: "频率", load_avg: "平均负载", one: "1 分钟", five: "5 分钟", fifteen: "15 分钟", disks: "磁盘列表", mount_point: "挂载点", file_system: "文件系统", processes: "进程列表", pid: "PID", name: "名称", cpu_usage: "CPU 使用率", memory_bytes: "内存占用", containers: "容器列表", status: "状态", available: "可用", reason: "原因", count: "数量", interfaces: "接口列表", address: "地址", local_addr: "本地地址", remote_addr: "远端地址", port: "端口", findings: "检查结果", severity: "级别", message: "详情", data: "数据", capabilities: "能力", agent_version: "Agent 版本", report_seq: "上报序号", expected_interval_ms: "上报间隔", timestamp: "采集时间", version: "协议版本", agent_id: "设备标识", os: "系统", arch: "架构", report_interval_ms: "完整上报间隔" }));
 let fullReport, reportDevice, reportCollector = "";
 async function loadHistory(force = false) {
   if (!reportDevice || historyLoading) return;
@@ -394,7 +394,7 @@ async function loadHistory(force = false) {
 }
 function drawHistory() {
   const history = historyViews.get(reportDevice?.viewKey + ":" + $("report-range").value), points = history?.points ?? [], charts = $("report-charts"); charts.replaceChildren();
-  for (const [title, keys, labels] of [["CPU", ["cpu_percent"], ["CPU"]], [t("内存"), ["memory_percent"], [t("内存")]], [t("磁盘"), ["disk_percent"], [t("磁盘")]], [t("网络"), ["network_rx_bps", "network_tx_bps"], [t("下载"), t("上传")]]]) {
+  for (const [title, keys, labels] of [["CPU", ["cpu_percent"], ["CPU"]], [t("内存"), ["memory_percent"], [t("内存")]], [t("磁盘"), ["disk_percent"], [t("磁盘")]], [t("默认出口"), ["network_rx_bps", "network_tx_bps"], [t("下载"), t("上传")]]]) {
     const card = node("section", undefined, "metric-chart"), heading = node("div", undefined, "chart-heading"); heading.append(node("h3", title));
     if (keys.length > 1) { const legend = node("span", undefined, "chart-legend"); labels.forEach((label, index) => legend.append(node("span", label, `chart-series-${index}`))); heading.append(legend); }
     card.append(heading, metricPlot(points, keys, labels, false, history)); charts.append(card);
@@ -434,6 +434,8 @@ function metricPlot(points, keys, labels, small = false, history) {
 }
 function reportLabel(key) { return t(reportLabels.get(key) ?? reportTitles.get(key) ?? key.replaceAll("_", " ")); }
 function reportScalar(value, key = "") {
+  if (key === "accounting_scope") return t(value === "default_route_interfaces" ? "默认出口接口" : "出口未识别");
+  if (key === "traffic_class") return t(({egress:"默认出口",lan:"其他局域接口",loopback:"回环",container:"容器与网桥",tunnel:"隧道",unknown:"未分类"})[value] ?? value);
   if (value === null || value === undefined) return t("未提供");
   if (typeof value === "boolean") return t(value ? "是" : "否");
   if (typeof value === "number") {
@@ -470,7 +472,7 @@ function updateReportLiveMetrics(device) {
   for (const [label, key] of [["CPU", "cpu_percent"], [t("内存"), "memory_percent"], [t("磁盘"), "disk_percent"]]) {
     const item = node("div"), value = device?.[key]; item.append(node("span", label), node("strong", online && typeof value === "number" ? `${value.toFixed(1)}%` : "—")); box.append(item);
   }
-  const network = node("div"); network.append(node("span", t("网络")), node("strong", online ? `↓ ${networkRate(device.network_rx_bps)} · ↑ ${networkRate(device.network_tx_bps)}` : "—")); box.append(network);
+  const network = node("div"); network.append(node("span", t("默认出口")), node("strong", online ? `↓ ${networkRate(device.network_rx_bps)} · ↑ ${networkRate(device.network_tx_bps)}` : "—")); box.append(network);
   $("report-live-status").textContent = `${t(online ? "在线" : "暂无实时数据")} · ${t("最近上报")} ${timeLabel(device?.last_seen)}`;
   drawHistory();
 }

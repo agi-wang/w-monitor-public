@@ -25,7 +25,7 @@ from redis_cache import RedisCache, MetricHistory
 from encryption import SealedData, verify_signature
 from i18n import EN, language, render_html, translate
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 SOURCE_RELEASE = Path(__file__).resolve().parents[1].name
 MAX_BODY = 8 * 1024 * 1024
 WEB = Path(__file__).resolve().parent / "web"
@@ -382,6 +382,85 @@ def network_rate(value):
     return round(value, 2) if type(value) in (int, float) and 0 <= value <= 1e15 and math.isfinite(value) else None
 
 
+def network_measurement(field, value):
+    if field.endswith("_per_sec"):
+        return network_rate(value)
+    return value if type(value) is int and 0 <= value <= 18446744073709551615 else None
+
+
+def network_accounting(network):
+    """Never reinterpret legacy all-interface sums as an egress measurement."""
+    names = network.get("default_route_interfaces")
+    evidence = isinstance(names, list) and len(names) <= 128 and all(isinstance(name, str) and 0 < len(name) <= 64 and not any(ord(char) < 32 for char in name) for name in names)
+    excluded = ("loopback", "docker", "veth", "br-", "virbr", "cni", "flannel", "cali", "ifb", "tun", "tap", "utun", "wg", "tailscale", "zt", "easytier", "ppp", "gre", "ip6tnl", "sit", "vxlan")
+    defaults = {name for name in names if name.lower() not in ("lo", "lo0") and not name.lower().startswith(excluded)} if evidence else set()
+    groups = {key: {"received_bytes": 0, "transmitted_bytes": 0, "received_bytes_per_sec": 0.0, "transmitted_bytes_per_sec": 0.0, "interface_count": 0} for key in ("egress", "lan", "loopback", "container", "tunnel", "unknown")}
+    interfaces = network.get("interfaces")
+    if isinstance(interfaces, list):
+        # Only an explicit route list permits old full snapshots to be corrected.
+        # No public-IP heuristic: NAT-facing egress addresses are often private.
+        seen, selected = set(), []
+        missing = {kind: set() for kind in groups}
+        for interface in interfaces[:4096]:
+            if not isinstance(interface, dict) or not isinstance(interface.get("name"), str):
+                continue
+            name = interface["name"]
+            if name in seen:
+                continue
+            seen.add(name)
+            lower = name.lower()
+            if lower in ("lo", "lo0") or lower.startswith("loopback"):
+                kind = "loopback"
+            elif lower.startswith(("docker", "veth", "br-", "virbr", "cni", "flannel", "cali", "ifb")):
+                kind = "container"
+            elif lower.startswith(("tun", "tap", "utun", "wg", "tailscale", "zt", "easytier", "ppp", "gre", "ip6tnl", "sit", "vxlan")):
+                kind = "tunnel"
+            elif name in defaults:
+                kind = "egress"
+            elif interface.get("traffic_class") == "container":
+                kind = "container"
+            else:
+                kind = "lan" if evidence else "unknown"
+            interface["traffic_class"] = kind
+            if kind == "egress":
+                selected.append(name)
+            group = groups[kind]
+            group["interface_count"] += 1
+            for field in ("received_bytes", "transmitted_bytes", "received_bytes_per_sec", "transmitted_bytes_per_sec"):
+                value = network_measurement(field, interface.get(field))
+                if value is not None:
+                    group[field] += value
+                else:
+                    missing[kind].add(field)
+        for kind, fields in missing.items():
+            for field in fields:
+                groups[kind][field] = None
+        selected = sorted(set(selected))
+        available = bool(selected)
+    else:
+        # Compact reports may omit interfaces, but must explicitly declare the
+        # corrected accounting and retain the actual selected route names.
+        available = evidence and bool(defaults) and network.get("accounting_version") == 2 and network.get("accounting_scope") == "default_route_interfaces"
+        selected = sorted(defaults) if available else []
+        supplied = network.get("traffic_groups", {})
+        if isinstance(supplied, dict) and network.get("accounting_version") == 2:
+            for kind, group in groups.items():
+                source = supplied.get(kind)
+                if isinstance(source, dict):
+                    for field in ("received_bytes", "transmitted_bytes", "received_bytes_per_sec", "transmitted_bytes_per_sec"):
+                        group[field] = network_measurement(field, source.get(field))
+                    count = source.get("interface_count")
+                    group["interface_count"] = count if type(count) is int and 0 <= count <= 4096 else 0
+        if available:
+            for field in ("received_bytes", "transmitted_bytes", "received_bytes_per_sec", "transmitted_bytes_per_sec"):
+                groups["egress"][field] = network_measurement(field, network.get("total_" + field))
+    result = dict(network)
+    result.update(accounting_version=2, accounting_scope="default_route_interfaces" if available else "unavailable", default_route_interfaces=selected, traffic_groups=groups)
+    for field in ("received_bytes", "transmitted_bytes", "received_bytes_per_sec", "transmitted_bytes_per_sec"):
+        result["total_" + field] = groups["egress"][field] if available else None
+    return result
+
+
 def offline_after(meta):
     expected = meta.get("expected_interval_ms", INTERVAL)
     if type(expected) is not int or not 1000 <= expected <= 1800000:
@@ -392,7 +471,8 @@ def offline_after(meta):
 def projection(row, meta=None, public=False, available=True, page_id=None):
     received = meta.get("received_at") if isinstance(meta, dict) else None
     online = received >= time.time() - offline_after(meta) if type(received) is int else None
-    result = {"name": meta.get("name", row["name"]) if isinstance(meta, dict) else row["name"], "online": online, "last_seen": received, "data_status": "available" if received else "awaiting_report" if available else "unavailable", "cpu_percent": meta.get("cpu") if online else None, "memory_percent": meta.get("memory") if online else None, "disk_percent": meta.get("disk") if online else None, "network_rx_bps": meta.get("network_rx_bps") if online else None, "network_tx_bps": meta.get("network_tx_bps") if online else None}
+    result = {"name": meta.get("name", row["name"]) if isinstance(meta, dict) else row["name"], "online": online, "last_seen": received, "data_status": "available" if received else "awaiting_report" if available else "unavailable", "cpu_percent": meta.get("cpu") if online else None, "memory_percent": meta.get("memory") if online else None, "disk_percent": meta.get("disk") if online else None, "network_rx_bps": meta.get("network_rx_bps") if online and meta.get("network_accounting_version") == 2 else None, "network_tx_bps": meta.get("network_tx_bps") if online and meta.get("network_accounting_version") == 2 else None}
+    result["network_accounting_scope"] = meta.get("network_accounting_scope", "unavailable") if isinstance(meta, dict) else "unavailable"
     if not public:
         result["id"] = row["id"]
         result["agent_id"] = row["agent_id"]
@@ -540,8 +620,13 @@ def receive(db, environ):
     report_metadata = report.get("metadata", {})
     capabilities = report_metadata.get("capabilities", {}) if isinstance(report_metadata, dict) else {}
     supports_metrics = metrics or (isinstance(capabilities, dict) and capabilities.get("telemetry.metrics") is True)
-    network = scalar(collectors, "network")
-    metadata = {"name": name, "received_at": int(time.time()), "expected_interval_ms": METRICS_INTERVAL if supports_metrics else interval, "cpu": percent(cpu.get("usage_percent", cpu.get("usage"))), "memory": percent(memory.get("usage_percent")), "disk": percent(disk.get("usage_percent")), "network_rx_bps": network_rate(network.get("total_received_bytes_per_sec")), "network_tx_bps": network_rate(network.get("total_transmitted_bytes_per_sec"))}
+    network = network_accounting(scalar(collectors, "network"))
+    if isinstance(collectors.get("network"), dict):
+        if isinstance(collectors["network"].get("data"), dict):
+            collectors["network"]["data"] = network
+        else:
+            collectors["network"] = network
+    metadata = {"name": name, "received_at": int(time.time()), "expected_interval_ms": METRICS_INTERVAL if supports_metrics else interval, "cpu": percent(cpu.get("usage_percent", cpu.get("usage"))), "memory": percent(memory.get("usage_percent")), "disk": percent(disk.get("usage_percent")), "network_accounting_version": 2, "network_accounting_scope": network["accounting_scope"], "network_rx_bps": network_rate(network.get("total_received_bytes_per_sec")), "network_tx_bps": network_rate(network.get("total_transmitted_bytes_per_sec"))}
     if isinstance(capabilities, dict) and type(capabilities.get("telemetry.settings")) is int and capabilities["telemetry.settings"] == 1 and all(type(capabilities.get(key)) is bool for key in ("telemetry.metrics", "telemetry.compression")):
         revision = capabilities.get("telemetry.config_revision")
         metadata["agent_settings"] = {"revision": revision if isinstance(revision, str) and re.fullmatch(r"[a-f0-9]{16}", revision) else None, "settings": {"realtime_metrics": capabilities["telemetry.metrics"], "compress_reports": capabilities["telemetry.compression"]}}

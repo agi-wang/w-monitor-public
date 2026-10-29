@@ -1,4 +1,4 @@
-# Public monitoring contract v1.2.0
+# Public monitoring contract v1.3.0
 
 [OpenAPI](server/openapi.json) describes browser, ingestion and public-status APIs.
 This receiver implements the existing v1.0 full report envelope; it has no Private
@@ -230,3 +230,35 @@ retain their existing envelope and cadence; server rollout needs no Agent update
 Historical samples are acknowledged atomically with current telemetry; Redis or
 CAS failures return503. Responses remain private/no-store; shared server cache
 is encrypted and does not bypass publication or owner authorization.
+
+## Network accounting v2
+
+The network collector now distinguishes `egress`, `lan`, `loopback`, `container`,
+`tunnel`, and `unknown` observations. `accounting_version=2` with
+`accounting_scope=default_route_interfaces` means `total_*` includes only selected
+default-route logical interfaces, each once. `default_route_interfaces` lists
+those names; each complete interface has `traffic_class`, and `traffic_groups`
+contains receive/transmit cumulative bytes and rates plus interface counts.
+IPv4/IPv6 lowest-metric active default routes are combined and deduplicated;
+known container/tunnel/loopback paths and selected lower/member interfaces are
+excluded. A route-carrying bridge/bond/VLAN can be the selected logical interface.
+
+This is **default egress interface traffic**, not destination-classified Internet
+traffic: a NAT/private-address egress interface remains valid, and that interface
+can carry LAN traffic too. Internal groups are raw interface observations and
+can overlap across bridges/veth; do not sum them as deduplicated LAN bandwidth.
+No routing evidence yields null egress values, never an all-interface fallback.
+
+Compact reports retain accounting/version/route/group fields. A legacy full report
+can be recomputed only when it explicitly supplies selected default interfaces;
+without that evidence legacy all-interface totals and compact totals are unknown.
+Owners may still inspect individual legacy interfaces and their internal classes.
+Old cached all-interface values are hidden. Manual Lite update is required to
+obtain new route evidence; no remote update or host-control path is introduced.
+
+Existing encrypted history chunks (`wmh1_`) retain CPU/memory/disk but their network
+counts are ignored. New chunks (`wmh2_`) bind AES-GCM associated data to
+`network-accounting-v2`, so changing a prefix cannot bypass the migration. An old
+chunk touched by ingestion is rewritten with valid network samples only. Cache
+purposes change with the accounting policy; old high network values cannot mix
+with corrected default-egress curves, while old non-network history stays intact.

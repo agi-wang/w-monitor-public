@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.2.0**; the release series starts at **v1.0.0**.
+The current release is **v1.3.0**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -345,3 +345,16 @@ resource values are encrypted at rest and never include private collector data.
 History starts accumulating when this version is activated; older unsaved samples
 cannot be backfilled. Redis persistence/eviction follows the account's configured
 Redis policy; this is retained telemetry, not a permanent archive or backup.
+
+### Default-egress network accounting
+
+Network overview/history count selected default-route interfaces instead of
+adding loopback, Docker bridges, veth and tunnels. The interface inventory and
+classified internal observations remain available privately. Default egress may
+include LAN traffic on that same interface; internal groups are not globally
+deduplicated bandwidth. Unknown egress is shown as unavailable. Older Lite Agents
+need a manual update for route evidence, and old ambiguous totals are never used
+as egress. Historical CPU/memory/disk are preserved; old ambiguous network points
+become gaps rather than zeros. Corrected egress history begins with newly
+identified egress samples; old per-interface traffic cannot be retroactively
+reconstructed into destination-classified Internet bandwidth. See PROTOCOL.md for accounting v2 fields/migration.
