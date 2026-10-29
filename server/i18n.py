@@ -21,7 +21,7 @@ EN = {
     '一键部署单台设备 ': 'One-command device setup ',
     '部署命令': 'Setup command',
     '在目标 Linux 设备执行下方命令。安装器验证发布来源后，会创建匿名空间和公开页，在终端打印私密恢复 Key 与访问地址，并启动 Lite Agent。': 'Run this command on your Linux device. After verifying the release, the installer creates an anonymous space and public page, prints your private recovery key and URLs, and starts the Lite Agent.',
-    '此流程会自动公开首台设备的名称、状态和基础资源占用。完整采集数据保持私有；恢复 Key 请勿分享。需预先安装 curl、Python 3 和 GitHub CLI，更新仍须手动执行。': 'This flow publishes the first device’s name, status and basic resource usage. Full reports stay private; keep the recovery key secret. Install curl, Python 3 and GitHub CLI first. Updates remain manual.',
+    '此流程会自动公开首台设备的名称、状态和基础资源占用。完整采集数据保持私有；恢复 Key 请勿分享。需预先安装 curl、Bash 和 SHA-256 校验工具，更新仍须手动执行。': 'This flow publishes the first device’s name, status and basic resource usage. Full reports stay private; keep the recovery key secret. Install curl, Bash and a SHA-256 checksum tool first. Updates remain manual.',
 
     '无效页码': 'Invalid page number',
     '上一页': 'Previous',
@@ -29,7 +29,7 @@ EN = {
     '第 {page} / {pages} 页 · 共 {total} 台设备': 'Page {page} / {pages} · {total} devices',
     ' · 只读快照': ' · Read-only snapshot',
     'JSON 必须是对象': 'JSON must be an object',
-    'Linux AMD64 / ARM64。先安装 curl、Python 3 和 GitHub CLI；安装器会验证发布来源。请以你允许进行采集的系统用户运行。': 'Linux AMD64 / ARM64. Install curl, Python 3 and GitHub CLI first. The installer verifies release provenance. Run as a system user whose collection permissions you trust.',
+    'Linux AMD64 / ARM64。先安装 curl、Bash 和 SHA-256 校验工具；安装器会校验下载文件。请以你允许进行采集的系统用户运行。': 'Linux AMD64 / ARM64. Install curl, Bash and a SHA-256 checksum tool first. The installer checks downloaded files. Run as a system user whose collection permissions you trust.',
     'W Monitor Public · 只读监控': 'W Monitor Public · Read-only monitoring',
     'W Monitor Public 首页': 'W Monitor Public home',
     '\n…预览已截断，可通过当前设备数据接口读取完整快照。': '\n…Preview truncated. The device data API provides the full snapshot.',

@@ -68,6 +68,10 @@ def private_config():
         parsed = urlsplit(issuer)
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ("", "/"):
             raise RuntimeError("Invalid identity origin")
+    assets = config.get("static_assets_url", "").rstrip("/")
+    if assets and not re.fullmatch(r"https://[A-Za-z0-9.-]+", assets):
+        raise RuntimeError("Static assets require a fixed HTTPS origin")
+    config["static_assets_url"] = assets
     return config, data, config["public_url"].rstrip("/"), interval, issuer
 
 
@@ -803,6 +807,9 @@ def application(environ, start_response):
     method = environ.get("REQUEST_METHOD", "GET")
     locale = language(environ.get("HTTP_ACCEPT_LANGUAGE", ""))
     headers = [("Cache-Control", "no-store, private"), ("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "no-referrer"), ("X-Robots-Tag", "noindex, nofollow"), ("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")]
+    assets = CONFIG.get("static_assets_url", "")
+    if assets:
+        headers = [(key, value.replace("script-src 'self';", "script-src 'self' " + assets + ";").replace("style-src 'self';", "style-src 'self' " + assets + ";")) if key == "Content-Security-Policy" else (key, value) for key, value in headers]
     headers += [("Content-Language", locale), ("Vary", "Accept-Language")]
     try:
         if method in ("GET", "HEAD") and path.startswith("/downloads/"):
@@ -816,7 +823,14 @@ def application(environ, start_response):
             file = "index.html" if path == "/" or path.startswith("/status/") else path[1:]
             payload = (WEB / file).read_bytes()
             if file == "index.html":
-                payload = render_html(payload.decode(), locale).encode()
+                html = render_html(payload.decode(), locale)
+                if assets:
+                    for name, attribute in (("app.js", "src"), ("style.css", "href")):
+                        digest = hashlib.sha256((WEB / name).read_bytes())
+                        url = assets + "/assets/" + digest.hexdigest() + "/" + name
+                        integrity = base64.b64encode(digest.digest()).decode()
+                        html = html.replace(attribute + '="/' + name + '"', attribute + '="' + url + '" integrity="sha256-' + integrity + '" crossorigin="anonymous"')
+                payload = html.encode()
             content = "text/html; charset=utf-8" if file.endswith("html") else "text/javascript; charset=utf-8" if file.endswith("js") else "text/css; charset=utf-8"
             status, extra = 200, []
         elif method == "GET" and path == "/i18n.js":

@@ -264,3 +264,19 @@ loading the receiver. This avoids requiring Apache `mod_env` / `SetEnv`, which
 some shared hosts omit. For a manual deployment, create the same owner-only file
 containing the absolute private `config.json` path. On Apache use the ordinary
 CloudLinux Python executable for `wsgi`; LiteSpeed uses its `lswsgi` executable.
+
+### Automatic frontend publication on Cloudflare Pages
+
+Connect this public GitHub repository to Cloudflare Pages, production branch
+`main`, build command `python3 ops/package_web.py`, output `artifacts/web`.
+Each merged commit automatically publishes JS/CSS assets. The build retains
+content-addressed assets from release tags so regions can deploy independently.
+GitHub CI also builds this output before a release passes its checks.
+
+Set the receiver's private `static_assets_url` to the Pages HTTPS origin, then
+restart its application. Regional HTML uses hashed CDN URLs plus SHA-256
+Subresource Integrity; CSP allows only that configured asset origin. Browser
+language, authentication, API calls, installer parameters and data remain on the
+selected regional origin. API/HTML responses retain their private no-store
+headers. Cloudflare serves public JS/CSS with immutable caching and anonymous
+CORS for integrity checks; it never receives cacheable tenant API responses.
