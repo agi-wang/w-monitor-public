@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.3.5**; the release series starts at **v1.0.0**.
+The current release is **v1.3.6**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
