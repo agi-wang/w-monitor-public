@@ -1,5 +1,6 @@
 name: Public suite build, release and receiver deployment
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     tags: ['v*']
