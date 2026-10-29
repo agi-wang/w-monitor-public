@@ -1,0 +1,225 @@
+# W Monitor Public
+
+Open-source, read-only host monitoring with a Rust Lite Agent, independent regional
+receivers, and shareable status pages. Public monitoring runs separately from
+W Monitor Private and has no remote host-control or Agent auto-update path.
+
+## Get started
+
+Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
+The current release series starts at **v1.0.0**.
+
+Open a regional site and choose **One-command device setup**:
+
+- [United States](https://monitor.20290708.xyz/)
+- [Singapore](https://sg.monitor.20290708.xyz/)
+- [United Kingdom](https://wm-uk.myfastools.com/)
+
+The website generates an installation command for its own region. For example:
+
+```sh
+curl -fsSL --proto '=https' --max-time 30 \
+  https://monitor.20290708.xyz/downloads/install.sh \
+  | bash -s -- --public https://monitor.20290708.xyz --language en
+```
+
+This downloads the Linux Agent from that site, checks its SHA-256 checksum,
+creates an anonymous space and public page, saves a private configuration, and
+starts the Agent. The terminal prints a recovery key, management URL, and public
+URL. The first connected device is selected for the initial public page.
+
+Requirements: Linux AMD64 or ARM64, Bash, curl, and standard GNU utilities including
+`sha256sum`. The Agent does not require Python or GitHub CLI. Optional installer
+flag `--verify-provenance` uses GitHub CLI to verify the release attestation.
+
+Keep the recovery key private. It restores the same space across browsers.
+
+### Interactive setup and existing devices
+
+Start an installed Agent without parameters:
+
+```sh
+"$HOME/.local/bin/w-monitor-lite"
+```
+
+An unconfigured Agent asks for a region and an existing registration key; leaving
+the key empty creates an anonymous space and prints its links. An Agent with a
+saved configuration starts directly.
+
+You can also supply a registration key explicitly:
+
+```sh
+"$HOME/.local/bin/w-monitor-lite" \
+  --endpoint https://monitor.20290708.xyz/api/v1/report \
+  --key wmb_REPLACE_WITH_YOUR_REGISTRATION_KEY
+```
+
+Configuration defaults to `$HOME/.config/w-monitor-public/agent.json` and can be
+selected with `--config`. The Agent writes owner-only configuration and exchanges
+the registration key for a device-bound telemetry token after its first report.
+
+**Updates are manual.** Stop your Agent, rerun the installer without setup
+parameters, then restart with the saved configuration. The receiver cannot ask an
+installed Agent to upgrade itself.
+
+## Spaces and public pages
+
+- Use an anonymous space with a private recovery key, or claim it through normal
+  OAuth login. Claiming a space does not grant host-control permissions.
+- Create multiple public pages and choose which of your devices each page shows.
+- Visitors see names, online status, CPU, memory, disk usage, and aggregate network
+  rates. IP addresses, process details, inventory, and full reports stay private.
+- Bind a verified identity email and opt in to offline/recovery notifications when
+  the receiver has an SMTP transport configured.
+- The interface and API messages support English and Simplified Chinese, selected
+  from the browser's `Accept-Language` preferences.
+
+The Lite Agent keeps permitted read-only collection within its OS user's
+permissions. It has no remote terminal, remote file-control endpoint, privilege
+escalation, or self-update implementation. Read-only reports can still contain
+sensitive host metadata; choose a receiver you trust.
+
+## Architecture
+
+| Component | Responsibility |
+| --- | --- |
+| Rust Lite Agent | Collect and send outbound HTTPS telemetry |
+| Regional Python WSGI receiver | Authenticate devices, manage spaces/pages, and serve data |
+| Private Redis Unix socket | Current metrics, encrypted report snapshots, and short-lived caches |
+| SQLite WAL database | Durable spaces, credential hashes, page selections, ownership, and notification state |
+| Cloudflare Pages | Public, immutable JavaScript and CSS assets |
+
+Each region has its own database, encryption key, Redis namespace, and device
+credentials. The regional URL selects the data node; a region code never grants
+access. All devices report to the common `POST /api/v1/report` path. Exact indexed
+credential hashes determine the owning device or space.
+
+Regional HTML, authentication, and API requests stay on the same origin. Loading
+static assets from Cloudflare does not move user data or sessions to the CDN.
+
+## Run a receiver
+
+Use Python 3.12+, SQLite, trusted HTTPS, Redis, and a hosting environment that can
+run Python WSGI. DirectAdmin and cPanel deployments use the provider's existing web
+server; the application does not open an additional public port.
+
+1. Keep release source and private data outside the document root.
+2. Install the exact wheels in `server/requirements.lock` into a `runtime` virtual
+   environment beside the release's `server/` directory.
+3. Copy [server/config.example.json](server/config.example.json) to an owner-only
+   private configuration file. Set the public origin, paths, and a random 32-byte
+   hexadecimal `instance_secret`.
+4. Configure Passenger to load `server/passenger_wsgi.py`. Apache uses the ordinary
+   Python executable; LiteSpeed uses its compatible `lswsgi` executable.
+5. Create a mode-0600 `config-path` file at the release root containing the absolute
+   private configuration path. The automated deployment gate creates it for you.
+6. Verify `/health` reports `mode: public`, `host_control_enabled: false`, and
+   `cache: redis`.
+
+The WSGI entrypoint loads the adjacent virtual environment and private startup
+pointer. It does not require Apache `mod_env` or `SetEnv`.
+
+Keep private directories at mode 0700 and configuration files at mode 0600.
+Back up SQLite **and** the instance encryption key. Redis snapshots are rebuildable
+from subsequent Agent reports; SQLite is not a telemetry fallback. If Redis is
+unavailable, ingestion fails explicitly and pages show unknown data availability.
+
+### Runtime configuration
+
+These settings are read at startup. Edit the private configuration and restart
+the receiver; no recompilation is required.
+
+| Setting | Default / purpose |
+| --- | --- |
+| `redis_socket` | Absolute path to the private Redis Unix socket |
+| `static_assets_url` | Optional HTTPS origin for Cloudflare-hosted JS/CSS |
+| `region_id`, `regions` | Current region and the public region catalog |
+| `report_interval_ms` | About 60,000 ms between full reports |
+| `metrics_interval_ms` | 3,000 ms between lightweight resource samples |
+| `page_refresh_ms` | 1,500 ms between browser refreshes |
+| `snapshot_cache_ms` | 500 ms view-cache window |
+| `offline_grace_ms` | 15,000 ms grace for realtime-capable devices |
+
+The receiver returns cadence hints with report responses. Agents adopt supported
+hints without a binary update. Older Agents retain their slower full-report cadence.
+These defaults target roughly five-second visibility; they are not a latency SLA.
+
+Optional OAuth uses Authorization Code + PKCE with `openid profile email` and the
+callback `https://YOUR_REGION/auth/callback`. Configure the `oidc_*` fields for
+normal login and the `smtp_*` fields for notifications. Only verified emails can
+be bound, and notification delivery requires user opt-in.
+
+### Account-owned Redis
+
+If the host does not supply Redis, [ops/build_redis.sh](ops/build_redis.sh) builds a
+pinned static Redis binary. Install it in the private deployment folder's `bin/`
+directory and place [ops/redis_watchdog.py](ops/redis_watchdog.py) beside the stable
+[ops/run_periodic.py](ops/run_periodic.py) entrypoint.
+
+Configure Redis with `port 0`, a private Unix socket with mode 0600, private
+pid/log paths, `daemonize yes`, `save ""`, `appendonly no`, `maxmemory 0`, and
+`enable-module-command no`. Keep its directory outside the web root. No Redis TCP
+listener is required. Run the periodic entrypoint through account Cron once per
+minute; it checks Redis before metrics/notifications and restarts a failed cache.
+
+The application imposes no device, space, or page-count quotas and requires no
+Redis memory cap. Compressed expiring snapshots, compact metrics, pagination, and
+conditional reads reduce resource use. Hosting-provider resource limits still apply.
+
+## Automatic publication
+
+[GitHub Actions](.github/workflows/ci.yml) checks the locked Rust/Python sources,
+builds static Linux AMD64/ARM64 Agents, packages the receiver, and verifies the
+frontend build. A matching version tag on `main` publishes checksums and artifact
+attestations, then deploys the receiver and website-hosted Agent downloads through
+protected regional environments.
+
+Deployment verifies the release's exact inventory, hashes, tag, and provenance.
+The private gate installs an immutable release, activates it, checks health, and
+restores the previous hosting configuration on failure. Application data and
+configuration remain outside release directories. Server deployment never updates
+installed Agents.
+
+Supported deployment transports:
+
+- Restricted SSH with a dedicated key and pinned host key.
+- DirectAdmin's authenticated file and terminal APIs.
+- cPanel's authenticated file and account Cron APIs, using a one-shot deployment
+  command and preserving existing account jobs.
+
+Set provider credentials only in protected GitHub environment secrets. The private
+`deploy-config.json` specifies `public_url`, `python`, `wsgi`, `periodic_enabled`,
+and, when needed, the exact account-owned `document_root`. An operator-authorized
+version rebase can set `reset_to_tag` to one exact tag in this private file;
+the gate consumes that permission only after successful activation.
+
+### Cloudflare frontend CI/CD
+
+Connect the repository to Cloudflare Pages with:
+
+| Setting | Value |
+| --- | --- |
+| Production branch | `main` |
+| Build command | `python3 ops/package_web.py` |
+| Output directory | `artifacts/web` |
+
+Merged commits automatically publish the frontend assets. Content-addressed files
+from release tags are retained so regional backends can roll forward independently.
+Set GitHub variable `PUBLIC_ASSETS_ORIGIN` and each receiver's `static_assets_url`
+to the same Pages HTTPS origin. GitHub checks the exact CDN asset bytes before
+receiver activation. Regional HTML uses SHA-256 Subresource Integrity and allows
+only the configured CDN origin in its Content Security Policy.
+
+Only public JS/CSS receive immutable CDN caching. Regional HTML, authentication,
+and tenant APIs retain private, no-store responses.
+
+## Source and contracts
+
+- [Agent and receiver protocol](PROTOCOL.md)
+- [Receiver OpenAPI](server/openapi.json)
+- [Security policy](SECURITY.md)
+- [MIT license](LICENSE)
+
+Local checks: `cargo fmt --all --check`, Python compilation for `server/` and
+`ops/`, `node --check server/web/app.js`, and the Linux musl build/lint/static gates
+defined in GitHub Actions.

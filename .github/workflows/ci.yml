@@ -1,0 +1,245 @@
+name: Public suite build, release and receiver deployment
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: public-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+jobs:
+  build:
+    name: build-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: linux-amd64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - arch: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install locked build tools
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y musl-tools binutils file
+          rustup toolchain install 1.96.0 --profile minimal --component rustfmt,clippy --target "$BUILD_TARGET"
+      - name: Validate release version and source ancestry
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)
+          test "$RELEASE_TAG" = "v$version"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: Formatting and lint
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --locked --target "$BUILD_TARGET" --bins --lib -- -D warnings
+      - name: Audit locked dependencies
+        if: matrix.arch == 'linux-amd64'
+        run: |
+          cargo install cargo-audit --version 0.22.1 --locked
+          cargo audit
+      - name: Build and gate static binary
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          ASSET_NAME: w-monitor-lite-${{ matrix.arch }}
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: |
+          cargo build --release --locked --target "$BUILD_TARGET"
+          binary="target/$BUILD_TARGET/release/w-monitor-lite"
+          file "$binary" | grep -Eq 'statically linked|static-pie linked'
+          if readelf -l "$binary" | grep -q INTERP; then exit 1; fi
+          if readelf -d "$binary" | grep -q NEEDED; then exit 1; fi
+          "$binary" --version
+          mkdir artifacts
+          cp "$binary" "artifacts/$ASSET_NAME"
+          (cd artifacts && sha256sum "$ASSET_NAME" > "$ASSET_NAME.sha256")
+      - name: Include the manual installer
+        if: matrix.arch == 'linux-amd64'
+        run: |
+          bash -n install.sh
+          cp install.sh artifacts/install.sh
+          (cd artifacts && sha256sum install.sh > install.sh.sha256)
+      - name: Check and package the independent receiver
+        if: matrix.arch == 'linux-amd64'
+        run: |
+          python3 -m venv /tmp/receiver-check
+          /tmp/receiver-check/bin/python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: --retries 2 --timeout 10 -r server/requirements.lock
+          /tmp/receiver-check/bin/python -m pip check
+          python3 -m compileall -q server ops
+          bash -n ops/build_redis.sh ops
+          node --check server/web/app.js
+          python3 ops/package_server.py
+          python3 ops/package_web.py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: public-${{ matrix.arch }}
+          path: |
+            artifacts/w-monitor-*
+            artifacts/install.sh*
+          if-no-files-found: error
+          retention-days: 14
+  release:
+    if: startsWith(github.ref, 'refs/tags/') && github.repository == 'agi-wang/w-monitor-public'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      # No source checkout or artifact execution occurs in the privileged job.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: public-*
+          path: release
+          merge-multiple: true
+      - name: Verify expected asset inventory
+        run: |
+          test "$(find release -mindepth 1 -maxdepth 1 | wc -l)" -eq 8
+          (cd release && sha256sum -c w-monitor-lite-linux-amd64.sha256 && sha256sum -c w-monitor-lite-linux-arm64.sha256 && sha256sum -c install.sh.sha256 && sha256sum -c w-monitor-public-server.zip.sha256)
+      - id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release/*
+      - name: Preserve the verifiable provenance bundle
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE_PATH" release/provenance.jsonl
+      - name: Publish versioned release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh release create "$RELEASE_TAG" release/* --repo "$GH_REPO" --verify-tag --title "$RELEASE_TAG" --notes 'Read-only Lite Agent and regional public monitoring receiver. Agent updates remain manual. Includes static Linux binaries, checksums and build provenance.' --latest
+  deploy-receiver:
+    if: startsWith(github.ref, 'refs/tags/') && github.repository == 'agi-wang/w-monitor-public'
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - region: us
+            environment: public-production
+          - region: sg
+            environment: public-singapore
+          - region: uk
+            environment: public-united-kingdom
+    environment: ${{ matrix.environment }}
+    concurrency:
+      group: public-receiver-production-${{ matrix.region }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      # The reviewed transport driver is checked out at the immutable tag.
+      # Downloaded application artifacts are never executed by the CI runner.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify the published receiver and deploy to its dedicated account
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          DEPLOY_HOST: ${{ vars.PUBLIC_DEPLOY_HOST }}
+          PUBLIC_ORIGIN: ${{ vars.PUBLIC_ORIGIN }}
+          PUBLIC_ASSETS_ORIGIN: ${{ vars.PUBLIC_ASSETS_ORIGIN }}
+          DEPLOY_TRANSPORT: ${{ vars.PUBLIC_DEPLOY_TRANSPORT }}
+          PUBLIC_DEPLOY_PANEL_URL: ${{ vars.PUBLIC_DEPLOY_PANEL_URL }}
+          PUBLIC_DEPLOY_USER: ${{ vars.PUBLIC_DEPLOY_USER }}
+          PUBLIC_DEPLOY_PRIVATE_DIR: ${{ vars.PUBLIC_DEPLOY_PRIVATE_DIR }}
+          PUBLIC_DEPLOY_PYTHON: ${{ vars.PUBLIC_DEPLOY_PYTHON }}
+          PUBLIC_DEPLOY_PANEL_TOKEN: ${{ secrets.PUBLIC_DEPLOY_PANEL_TOKEN }}
+          PUBLIC_DEPLOY_PANEL_PASSWORD: ${{ secrets.PUBLIC_DEPLOY_PANEL_PASSWORD }}
+          DEPLOY_USER: ${{ vars.PUBLIC_DEPLOY_USER }}
+          DEPLOY_KEY: ${{ secrets.PUBLIC_DEPLOY_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.PUBLIC_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
+          [[ "$DEPLOY_USER" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]
+          [[ "$PUBLIC_ORIGIN" =~ ^https://[A-Za-z0-9.-]+$ ]]
+          if [ "$DEPLOY_TRANSPORT" = directadmin ]; then
+            test -n "$PUBLIC_DEPLOY_PANEL_PASSWORD"
+          elif [ "$DEPLOY_TRANSPORT" = cpanel ]; then
+            test -n "$PUBLIC_DEPLOY_PANEL_TOKEN"
+          else
+            test -n "$DEPLOY_KEY" && test -n "$DEPLOY_KNOWN_HOSTS"
+          fi
+          temporary=$(mktemp -d)
+          trap 'rm -rf -- "$temporary"' EXIT
+          chmod 700 "$temporary"
+          mkdir "$temporary/assets"
+          gh release download "$RELEASE_TAG" --repo "$GH_REPO" --dir "$temporary/assets"
+          test "$(find "$temporary/assets" -maxdepth 1 -type f | wc -l)" -eq 9
+          for asset in w-monitor-public-server.zip w-monitor-lite-linux-amd64 w-monitor-lite-linux-arm64 install.sh; do
+            (cd "$temporary/assets" && sha256sum -c "$asset.sha256")
+            gh attestation verify "$temporary/assets/$asset" --bundle "$temporary/assets/provenance.jsonl" \
+              --repo "$GH_REPO" --source-ref "refs/tags/$RELEASE_TAG" --signer-workflow "$GH_REPO/.github/workflows/ci.yml"
+          done
+          chmod 644 "$temporary/assets/"*
+          TZ=UTC touch -t 202601010000 "$temporary/assets/"*
+          (cd "$temporary/assets" && zip -q -X -0 "$temporary/delivery.zip" ./*)
+          if [ -n "$PUBLIC_ASSETS_ORIGIN" ]; then
+            [[ "$PUBLIC_ASSETS_ORIGIN" =~ ^https://[A-Za-z0-9.-]+$ ]]
+            for file in app.js style.css; do
+              asset_sha=$(sha256sum "server/web/$file" | cut -d' ' -f1)
+              curl -fsS --proto '=https' --tlsv1.2 --max-time 30 --retry 2 \
+                "$PUBLIC_ASSETS_ORIGIN/assets/$asset_sha/$file" -o "$temporary/$file"
+              cmp "server/web/$file" "$temporary/$file"
+            done
+          fi
+          sha=$(sha256sum "$temporary/delivery.zip" | cut -d' ' -f1)
+          [[ "$sha" =~ ^[a-f0-9]{64}$ ]]
+          umask 077
+          printf '%s\n' "$DEPLOY_KEY" > "$temporary/identity"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$temporary/known_hosts"
+          if [ "$DEPLOY_TRANSPORT" = directadmin ] || [ "$DEPLOY_TRANSPORT" = cpanel ]; then
+            python3 ops/panel_deploy.py "$temporary/delivery.zip" "$RELEASE_TAG" "$sha"
+          else
+            ssh -i "$temporary/identity" -o KexAlgorithms=diffie-hellman-group14-sha256 -c aes128-ctr -o BatchMode=yes -o ConnectTimeout=10 \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$temporary/known_hosts" \
+              "$DEPLOY_USER@$DEPLOY_HOST" "deploy $RELEASE_TAG $sha" < "$temporary/delivery.zip"
+          fi
+          curl -fsS --proto '=https' --tlsv1.2 --tls-max 1.2 --max-time 20 --retry 2 \
+            "$PUBLIC_ORIGIN/health" > "$temporary/health.json"
+          python3 -c 'import json,os,sys; h=json.load(open(sys.argv[1])); assert h["release_tag"] == os.environ["RELEASE_TAG"] and h["host_control_enabled"] is False and h["cache"] == "redis"' "$temporary/health.json"
+          mkdir "$temporary/website"
+          for file in w-monitor-lite-linux-amd64 w-monitor-lite-linux-amd64.sha256 w-monitor-lite-linux-arm64 w-monitor-lite-linux-arm64.sha256 install.sh install.sh.sha256; do
+            curl -fsS --proto '=https' --tlsv1.2 --tls-max 1.2 --max-time 90 --retry 2 \
+              "$PUBLIC_ORIGIN/downloads/$RELEASE_TAG/$file" -o "$temporary/website/$file"
+          done
+          (cd "$temporary/website" && sha256sum -c w-monitor-lite-linux-amd64.sha256 && sha256sum -c w-monitor-lite-linux-arm64.sha256 && sha256sum -c install.sh.sha256)

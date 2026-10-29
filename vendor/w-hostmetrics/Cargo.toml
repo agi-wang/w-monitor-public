@@ -1,0 +1,21 @@
+[package]
+name = "w-hostmetrics"
+version = "0.2.1"
+edition = "2021"
+license = "MIT"
+description = "Vendored read-only host metrics used by W-Monitor Lite"
+publish = false
+
+[features]
+default = ["serde"]
+serde = ["dep:serde"]
+sysinfo = ["dep:sysinfo"]
+sysinfo-disks = ["sysinfo"]
+sampling = []
+gpu-props = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+sysinfo = { version = "0.39", optional = true, default-features = false, features = ["system", "disk"] }
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
