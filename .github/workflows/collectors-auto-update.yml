@@ -1,0 +1,42 @@
+name: Reconcile shared collector updates
+on:
+  schedule:
+    - cron: '11,26,41,56 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Read the current and latest shared versions without mutations
+        type: boolean
+        default: false
+permissions: {}
+concurrency:
+  group: public-collectors-auto-update
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    if: github.repository == 'agi-wang/w-monitor-public' && (vars.COLLECTORS_AUTO_UPDATE_ENABLED == 'true' || inputs.dry_run == true)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Install the pinned Cargo toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal
+      - name: Reconcile one shared update through release and deployment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RUSTUP_TOOLCHAIN: 1.96.0
+          CARGO_NET_RETRY: '2'
+          DRY_RUN: ${{ inputs.dry_run == true }}
+        run: |
+          if [ "$DRY_RUN" = true ]; then
+            python3 ops/update_collectors.py --dry-run
+          else
+            python3 ops/update_collectors.py
+          fi

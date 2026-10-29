@@ -315,6 +315,63 @@ Verify the regional HTTP `/health` through the deployment gate before considerin
 the receiver active. This concerns receiver hosting only; Agent installation and
 manual-update behavior are unchanged.
 
+### Automatic shared collector updates
+
+[collectors-auto-update.yml](.github/workflows/collectors-auto-update.yml) reconciles
+public shared releases every 15 minutes or through manual dispatch. Enable it with
+repository variable `COLLECTORS_AUTO_UPDATE_ENABLED=true` after reviewing the
+workflow. Allow Actions to create pull requests. Protect `main` with strict
+up-to-date required checks `build-linux-amd64` and `build-linux-arm64`, enforced
+for administrators too. Keep force pushes and branch deletion disabled. The
+reconciler checks the protected required-build summary and a clean merge state;
+strict up-to-date protection closes the PR merge API's concurrent-base race.
+
+Only this synchronization workflow has repository-local contents, pull-request
+and Actions write permissions. It uses `GITHUB_TOKEN` for the two fixed public
+repositories; no personal token, Private repository access or provider secret is
+needed. If a shared Actions GET specifically denies integration access, it retries
+that public GET anonymously; a rate-limit response remains an error.
+The operator [ops/update_collectors.py](ops/update_collectors.py) requires Python
+3.11+, and the workflow installs the existing pinned Rust 1.96 toolchain.
+
+The latest stable shared release must be newer than the locked shared package and
+have successful tag CI and a matching package manifest version at that exact
+immutable commit. One deterministic bot branch
+and PR pin that commit and increment the Public patch release. Only `Cargo.toml`,
+`Cargo.lock`, receiver/OpenAPI versions and the README/protocol version declarations
+may change. Lock changes are limited to the old/new exact shared package
+dependency closures; unrelated packages and non-causal dependency edges must stay
+unchanged. Shared dependency and transitive upgrades within those closures are
+allowed, while the five-direct-dependency boundary remains fixed. An incompatible
+boundary change requires manual review instead.
+
+The reconciler explicitly dispatches the existing CI on the bot branch because
+`GITHUB_TOKEN`-created commits and PRs do not trigger ordinary push/PR workflows.
+It checks the exact SHA, then merges only a clean PR whose tested base remains
+unchanged. It dispatches and verifies CI on the exact merged `main` commit, creates
+an immutable product tag, and dispatches that tag through the existing build,
+release and seven-node deployment jobs. Installed Agents still update only when
+their local operator manually installs a release.
+
+Pending work resumes before considering a newer shared release. Existing dispatch
+runs are identified by event, ref and SHA; a pending CI is polled, not repeatedly
+started. A time limit defers remaining work to the next schedule. Failed CI stops
+the workflow: inspect and manually rerun its failed jobs, then reconcile again.
+API failures are errors, never “no update”. A changed main, modified/unknown bot
+branch, conflicting tag or closed pending bot PR also stops reconciliation; human
+changes are never force-pushed or automatically rebased. Closing the pending PR
+therefore halts later updates until an operator resolves it.
+
+For a read-only current/latest comparison, dispatch with `dry_run=true` or run:
+
+```sh
+python3 ops/update_collectors.py --dry-run
+```
+
+This verifies the stable shared tag, manifest and CI, then prints whether an
+update is available without creating a branch, PR, tag, release or deployment. Enabling this automation does not itself bump the current
+product version.
+
 ### Cloudflare frontend CI/CD
 
 Connect the repository to Cloudflare Pages with:
