@@ -62,6 +62,7 @@ async function restoreWithKey(key) {
 }
 async function restoreSpace(recovery) {
   if (recovery.startsWith("wmr2_")) { await restoreWithKey(await clientKey(recovery)); return; }
+  if (!/^wmr_[a-f0-9]{64}$/.test(recovery)) throw new Error(t("恢复口令无效"));
   await api("/api/spaces/restore", { recovery }); session = await api("/api/session");
   if (!session.key_public) {
     const key = await clientKey();
@@ -116,6 +117,7 @@ function empty(target, title, description) {
 function timeLabel(timestamp) {
   return timestamp ? new Date(timestamp * 1000).toLocaleString(locale, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : t("尚无上报");
 }
+function networkRate(value) { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? new Intl.NumberFormat(locale, { notation: "compact", maximumFractionDigits: 1 }).format(value) + " B/s" : "—"; }
 function drawDevices(target, rows, publicView = false) {
   if (!rows.length) { empty(target, publicView ? t("暂无公开设备") : t("等待第一台设备"), publicView ? t("发布者尚未选择设备，或设备已被移除。") : t("点击“接入设备”，在主机上运行 Lite Agent。首次上报后设备会出现在这里。")); return; }
   const table = node("table", undefined, "device-table");
@@ -138,8 +140,7 @@ function drawDevices(target, rows, publicView = false) {
       fill.style.width = `${valid ? value : 0}%`; bar.append(fill); metric.append(bar); cell.append(metric); row.append(cell);
     }
     const traffic = node("td", undefined, "metric-cell"); traffic.dataset.label = t("网络");
-    const rate = value => typeof value === "number" && Number.isFinite(value) && value >= 0 ? new Intl.NumberFormat(locale, { notation: "compact", maximumFractionDigits: 1 }).format(value) + " B/s" : "—";
-    traffic.textContent = `↓ ${rate(device.network_rx_bps)} · ↑ ${rate(device.network_tx_bps)}`; row.append(traffic);
+    traffic.textContent = `↓ ${networkRate(device.network_rx_bps)} · ↑ ${networkRate(device.network_tx_bps)}`; row.append(traffic);
     if (!publicView) {
       const cell = node("td", undefined, "actions-cell"), actions = node("div", undefined, "row-actions");
       actions.append(button(t("Agent 配置"), () => showAgentSettings(device), ""), button(t("查看采集"), () => showReport(device), ""), button(t("移除接入"), async () => {
@@ -212,14 +213,21 @@ async function refresh() {
       pollMs = data.refresh_ms; startRealtime();
     }
     if (publicSlug) { $("public-title").textContent = data.title; drawDevices($("public-list"), data.devices, true); }
-    else { devices = data.devices; $("device-count").textContent = data.total; drawDevices($("device-list"), devices); }
+    else { devices = data.devices; $("device-count").textContent = data.total; drawDevices($("device-list"), devices); if (reportDevice) updateReportLiveMetrics(devices.find(device => device.id === reportDevice.id)); }
     drawPaging($(publicSlug ? "public-list" : "device-list"), data);
   } catch (error) {
     if (current !== generation) return;
     notice(error.message); lastView = undefined;
     // Never leave a revoked public snapshot, or a failed private read, visible.
     empty($(publicSlug ? "public-list" : "device-list"), t("暂时无法读取"), t("请刷新页面；链接可能已停用，或当前会话已经失效。"));
-    if (!publicSlug) devices = [];
+    if (!publicSlug) {
+      devices = [];
+      if (reportDevice) updateReportLiveMetrics();
+      if ([401, 403].includes(error.status)) {
+        if ($("report-dialog").open) $("report-dialog").close();
+        if ($("device-settings-dialog").open) $("device-settings-dialog").close();
+      }
+    }
   } finally {
     refreshing = false;
     if (refreshAgain) { refreshAgain = false; void refresh(); }
@@ -275,6 +283,9 @@ async function loadSession() {
   $("welcome").hidden = Boolean(session.space); $("dashboard").hidden = !session.space;
   $("loading").hidden = true;
   if (session.space) {
+    if (session.key_public) {
+      try { const key = browserKeys.get(session.key_public) ?? await keyStore("readonly", store => store.get(session.key_public)); if (key) await rememberKey(key); } catch {}
+    }
     history.replaceState(null, "", "/manage/" + session.manage_token);
     $("space-title").textContent = session.space.title;
     $("space-kind").textContent = session.space.claimed ? t("已领用的监控空间") : t("匿名监控空间");
@@ -326,12 +337,100 @@ async function openPage(page = null) {
   if (!options.length) $("page-devices").append(node("p", t("尚无设备，可以先保存页面，接入设备后再选择。"), "subtle"));
   $("page-dialog").showModal();
 }
+const reportTitles = new Map(Object.entries({ system: "系统信息", cpu: "CPU 与负载", memory: "内存与交换", disk: "磁盘与挂载", disk_io: "磁盘 I/O", process: "进程", network: "网络接口", connections: "网络连接", traffic_flows: "流量明细", sensor: "温度与传感器", mount_health: "挂载健康", gpu: "GPU", docker: "容器", security_posture: "安全检查", login_accounts: "登录与账号", diting_audit: "审计摘要", web_hosts: "网站与证书", project_status: "服务与项目", software_inventory: "软件清单", security_advisories: "安全公告", ping: "延迟探测", traceroute: "网络路径", easytier: "EasyTier", cache_scan: "缓存扫描", vps_pressure: "主机负载", transport_runtime: "上报链路", runtime_access: "采集权限" }));
+const reportLabels = new Map(Object.entries({ hostname: "主机名称", os_name: "操作系统", os_version: "系统版本", kernel_version: "内核版本", architecture: "架构", uptime_seconds: "运行时长", uptime_secs: "运行时长", cpu_count: "CPU 核心", total_memory_bytes: "物理内存", usage_percent: "使用率", total_bytes: "总容量", used_bytes: "已用容量", available_bytes: "可用容量", swap_total_bytes: "交换区容量", swap_used_bytes: "已用交换区", swap_usage_percent: "交换区使用率", cores: "核心数", per_core: "每核心指标", core: "核心", brand: "型号", frequency_mhz: "频率", load_avg: "平均负载", one: "1 分钟", five: "5 分钟", fifteen: "15 分钟", disks: "磁盘列表", mount_point: "挂载点", file_system: "文件系统", processes: "进程列表", pid: "PID", name: "名称", cpu_usage: "CPU 使用率", memory_bytes: "内存占用", containers: "容器列表", status: "状态", available: "可用", reason: "原因", count: "数量", interfaces: "接口列表", address: "地址", local_addr: "本地地址", remote_addr: "远端地址", port: "端口", findings: "检查结果", severity: "级别", message: "详情", data: "数据", capabilities: "能力", agent_version: "Agent 版本", report_seq: "上报序号", expected_interval_ms: "上报间隔", timestamp: "采集时间", version: "协议版本", agent_id: "设备标识", os: "系统", arch: "架构", report_interval_ms: "完整上报间隔" }));
+let fullReport, reportDevice;
+function reportLabel(key) { return t(reportLabels.get(key) ?? reportTitles.get(key) ?? key.replaceAll("_", " ")); }
+function reportScalar(value, key = "") {
+  if (value === null || value === undefined) return t("未提供");
+  if (typeof value === "boolean") return t(value ? "是" : "否");
+  if (typeof value === "number") {
+    if (/bytes(?:_per_sec)?$/.test(key) && value >= 0) {
+      const units = ["B", "KiB", "MiB", "GiB", "TiB"]; let number = value, unit = 0;
+      while (number >= 1024 && unit < units.length - 1) { number /= 1024; unit += 1; }
+      return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(number)} ${units[unit]}${key.endsWith("_per_sec") ? "/s" : ""}`;
+    }
+    return new Intl.NumberFormat(locale, { maximumFractionDigits: 3 }).format(value) + (key.endsWith("percent") || key === "cpu_usage" ? "%" : key.endsWith("_mhz") ? " MHz" : key.endsWith("_ms") ? " ms" : key.endsWith("_seconds") || key.endsWith("_secs") ? " s" : "");
+  }
+  return typeof value === "string" && value === "insufficient_permissions" ? t("权限不足") : String(value);
+}
+function updateReportLiveMetrics(device) {
+  const box = $("report-live"); box.replaceChildren();
+  const online = device?.online === true;
+  for (const [label, key] of [["CPU", "cpu_percent"], [t("内存"), "memory_percent"], [t("磁盘"), "disk_percent"]]) {
+    const item = node("div"), value = device?.[key]; item.append(node("span", label), node("strong", online && typeof value === "number" ? `${value.toFixed(1)}%` : "—")); box.append(item);
+  }
+  const network = node("div"); network.append(node("span", t("网络")), node("strong", online ? `↓ ${networkRate(device.network_rx_bps)} · ↑ ${networkRate(device.network_tx_bps)}` : "—")); box.append(network);
+}
+function reportBranch(value, title) {
+  const details = node("details", undefined, "report-branch"), count = Array.isArray(value) ? value.length : Object.keys(value).length;
+  details.append(node("summary", `${title} · ${count}`));
+  details.addEventListener("toggle", () => { if (details.open && !details.dataset.loaded) { details.dataset.loaded = "true"; details.append(renderReportValue(value)); } });
+  return details;
+}
+function renderReportValue(value) {
+  if (Array.isArray(value)) {
+    if (!value.length) return node("p", t("暂无条目"), "subtle");
+    const box = node("div", undefined, "report-array"), search = node("input"), content = node("div", undefined, "report-table-scroll"), paging = node("div", undefined, "report-array-paging");
+    search.type = "search"; search.placeholder = t("筛选当前列表"); search.setAttribute("aria-label", t("筛选当前列表")); box.append(search, content, paging);
+    const searchable = value.map(item => JSON.stringify(item).toLocaleLowerCase(locale)); let current = value, page = 0;
+    const draw = () => {
+      content.replaceChildren(); paging.replaceChildren(); const rows = current.slice(page * 25, (page + 1) * 25);
+      if (!rows.length) { content.append(node("p", t("暂无匹配条目"), "subtle")); return; }
+      if (rows.every(row => row !== null && typeof row === "object" && !Array.isArray(row))) {
+        const columns = [...new Set(rows.flatMap(row => Object.keys(row)))], table = node("table", undefined, "report-data-table"), head = node("thead"), tr = node("tr");
+        for (const key of columns) tr.append(node("th", reportLabel(key))); head.append(tr); table.append(head); const body = node("tbody");
+        for (const row of rows) {
+          const line = node("tr"); for (const key of columns) { const cell = node("td"), item = Object.prototype.hasOwnProperty.call(row, key) ? row[key] : null; cell.append(item !== null && typeof item === "object" ? reportBranch(item, t("展开")) : node("span", reportScalar(item, key))); line.append(cell); } body.append(line);
+        }
+        table.append(body); content.append(table);
+      } else {
+        const list = node("ol"); list.start = page * 25 + 1;
+        for (const item of rows) { const row = node("li"); row.append(item !== null && typeof item === "object" ? reportBranch(item, t("展开")) : node("span", reportScalar(item))); list.append(row); } content.append(list);
+      }
+      const previous = button(t("上一页"), () => { page -= 1; draw(); }, "button"), next = button(t("下一页"), () => { page += 1; draw(); }, "button"); previous.disabled = page === 0; next.disabled = (page + 1) * 25 >= current.length;
+      paging.append(node("span", t("第 {start}–{end} 条，共 {count} 条", { start: page * 25 + 1, end: Math.min((page + 1) * 25, current.length), count: current.length })), previous, next);
+    };
+    search.oninput = () => { const term = search.value.trim().toLocaleLowerCase(locale); current = value.filter((_, index) => searchable[index].includes(term)); page = 0; draw(); }; draw(); return box;
+  }
+  if (value !== null && typeof value === "object") {
+    const box = node("div", undefined, "report-object"), fields = node("dl", undefined, "report-fields"); box.append(fields);
+    for (const [key, item] of Object.entries(value)) {
+      if (item !== null && typeof item === "object") box.append(reportBranch(item, reportLabel(key)));
+      else { const pair = node("div"), content = node("dd", reportScalar(item, key)); if (typeof item === "number") content.title = String(item); pair.append(node("dt", reportLabel(key)), content); fields.append(pair); }
+    }
+    if (!Object.keys(value).length) box.append(node("p", t("暂无条目"), "subtle")); return box;
+  }
+  return node("p", reportScalar(value), "report-text");
+}
+function drawFullReport() {
+  const target = $("report-sections"); target.replaceChildren();
+  const collectors = fullReport?.collectors ?? {}, order = [...reportTitles.keys()], entries = Object.entries(collectors).sort(([a], [b]) => (order.includes(a) ? order.indexOf(a) : order.length) - (order.includes(b) ? order.indexOf(b) : order.length)), term = $("report-search").value.trim().toLocaleLowerCase(locale);
+  $("report-summary").textContent = t("{count} 项采集 · 最近完整快照：{time}", { count: entries.length, time: fullReport?.timestamp ? new Date(fullReport.timestamp).toLocaleString(locale) : t("未提供") });
+  const all = [["envelope", Object.fromEntries(Object.entries(fullReport ?? {}).filter(([key]) => key !== "collectors"))], ...entries];
+  let shown = 0;
+  for (const [key, value] of all) {
+    const title = key === "envelope" ? t("上报信息") : t(reportTitles.get(key) ?? key.replaceAll("_", " "));
+    if (term && !`${key} ${title} ${value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value).join(" ") : ""}`.toLocaleLowerCase(locale).includes(term)) continue;
+    const section = node("details", undefined, "report-section"), heading = node("summary"), label = node("span", title), badge = node("span", key, "report-section-key"); heading.append(label, badge); section.append(heading); target.append(section); shown += 1;
+    const fill = () => { if (section.open && !section.dataset.loaded) { section.dataset.loaded = "true"; section.append(renderReportValue(value)); } };
+    section.addEventListener("toggle", fill); if (["system", "cpu", "memory"].includes(key) || term) { section.open = true; fill(); }
+  }
+  if (!shown) empty(target, t("暂无匹配采集项"), t("可尝试采集名称或字段名。"));
+}
+
 async function showReport(device) {
-  const data = await api(`/api/devices/${device.id}`);
-  const raw = JSON.stringify(data.report, null, 2);
-  $("report-title").textContent = device.name + t(" · 只读快照");
-  $("report-content").textContent = raw.length > 512000 ? raw.slice(0, 512000) + t("\n…预览已截断，可通过当前设备数据接口读取完整快照。") : raw;
+  reportDevice = device; fullReport = undefined; updateReportLiveMetrics(device);
+  $("report-title").textContent = device.name;
+  $("report-summary").textContent = t("正在读取完整快照…");
+  $("report-sections").replaceChildren(); $("report-search").value = "";
+  $("report-download").disabled = true; $("report-raw").open = false;
   $("report-dialog").showModal();
+  try {
+    const data = await api(`/api/devices/${device.id}`);
+    if (reportDevice !== device) return;
+    fullReport = data.report; $("report-download").disabled = false; drawFullReport();
+  } catch (error) { if (reportDevice === device) $("report-summary").textContent = error.message; }
 }
 async function readAgentSettings(initial = false) {
   const selected = settingsDevice;
@@ -359,7 +458,10 @@ async function showAgentSettings(device) {
   settingsPoll = setInterval(() => void readAgentSettings().catch(error => { $("device-settings-status").textContent = error.message; }), 3000);
 }
 for (const element of document.querySelectorAll("[data-close]")) element.addEventListener("click", () => $(element.dataset.close).close());
-$("report-dialog").addEventListener("close", () => { $("report-content").textContent = ""; });
+$("report-dialog").addEventListener("close", () => { reportDevice = undefined; fullReport = undefined; $("report-content").textContent = ""; $("report-sections").replaceChildren(); });
+$("report-search").oninput = () => { if (fullReport) drawFullReport(); };
+$("report-raw").addEventListener("toggle", () => { if ($("report-raw").open && fullReport) $("report-content").textContent = JSON.stringify(fullReport, null, 2); });
+$("report-download").onclick = () => { if (!fullReport) return; const url = URL.createObjectURL(new Blob([JSON.stringify(fullReport, null, 2)], { type: "application/json" })), link = node("a"); link.href = url; link.download = "w-monitor-" + String(reportDevice.id) + ".json"; link.hidden = true; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
 $("restore-dialog").addEventListener("close", () => { $("restore-key").value = ""; });
 $("install-dialog").addEventListener("close", () => { $("install-command").value = ""; });
 $("device-settings-dialog").addEventListener("close", () => { clearInterval(settingsPoll); settingsDevice = undefined; });

@@ -770,7 +770,7 @@ def route(db, environ):
         public_key = space_proof(db, session, value["key_proof"], "create") if "key_proof" in value else None
         begin_browser_write(db, session)
         channel = ""  # Retained storage column for existing databases; no ingest links.
-        db.execute("INSERT INTO spaces(id,title,recovery_hash,bootstrap_hash,owner,created_at,channel) VALUES(?,?,?,?,?,?,?)", (space_id, title.strip(), digest(recovery), digest(bootstrap), session["subject"], int(time.time()), channel))
+        db.execute("INSERT INTO spaces(id,title,recovery_hash,bootstrap_hash,owner,created_at,channel) VALUES(?,?,?,?,?,?,?)", (space_id, title.strip(), secrets.token_hex(32) if public_key else digest(recovery), digest(bootstrap), session["subject"], int(time.time()), channel))
         result = {"bootstrap_key": bootstrap}
         if public_key:
             remember_space_key(db, space_id, public_key)
@@ -888,7 +888,7 @@ def route(db, environ):
         if path.endswith("claim") and (not active["subject"] or (space["owner"] and space["owner"] != active["subject"])):
             raise Rejected(403, "需要正常登录，且不能领用其他账号的空间")
         owner = session["subject"] if path.endswith("claim") else space["owner"]
-        db.execute("UPDATE spaces SET owner=?,recovery_hash=?,bootstrap_hash=? WHERE id=?", (owner, digest(recovery), digest(bootstrap), space["id"]))
+        db.execute("UPDATE spaces SET owner=?,recovery_hash=?,bootstrap_hash=? WHERE id=?", (owner, secrets.token_hex(32) if public_key else digest(recovery), digest(bootstrap), space["id"]))
         if public_key:
             remember_space_key(db, space["id"], public_key)
         db.execute("DELETE FROM sessions WHERE space_id=? AND hash!=?", (space["id"], session["hash"]))

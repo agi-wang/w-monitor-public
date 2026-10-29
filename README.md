@@ -273,3 +273,12 @@ and tenant APIs retain private, no-store responses.
 Local checks: `cargo fmt --all --check`, Python compilation for `server/` and
 `ops/`, `node --check server/web/app.js`, and the Linux musl build/lint/static gates
 defined in GitHub Actions.
+
+### Complete private device details
+
+Open a device snapshot to browse every collector, including nested fields and
+unknown collector types. System, CPU, memory, disks, network, processes, containers,
+services and security data render as sections/tables. Long lists are searchable
+and paginated; no rows are discarded. The realtime overview stays separate from
+the last-full-snapshot timestamp. Raw JSON is available on demand and as a complete
+local download. Public pages continue to use their deliberately limited projection.
