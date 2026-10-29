@@ -128,7 +128,6 @@ PassengerBaseURI "/"
 PassengerPython "/opt/alt/python313/bin/lswsgi"
 PassengerAppType wsgi
 PassengerStartupFile passenger_wsgi.py
-SetEnv WM_PUBLIC_CONFIG "/home/ACCOUNT/.w-monitor/config.json"
 ```
 
 `passenger_wsgi.py` loads the adjacent release's venv packages. Verify `/health`
@@ -258,3 +257,10 @@ restarts a failed cache at the next minute tick. While Redis is unavailable,
 ingest returns failure and pages show unknown status; Agent retries and resumes.
 A recovered cache warms as Agents report again. This is not a lossless telemetry
 store. No additional account or tenant resource quotas are imposed.
+
+The deployment gate writes a mode-0600 `config-path` file beside each release's
+`server/` directory. The WSGI entrypoint reads this private startup pointer before
+loading the receiver. This avoids requiring Apache `mod_env` / `SetEnv`, which
+some shared hosts omit. For a manual deployment, create the same owner-only file
+containing the absolute private `config.json` path. On Apache use the ordinary
+CloudLinux Python executable for `wsgi`; LiteSpeed uses its `lswsgi` executable.

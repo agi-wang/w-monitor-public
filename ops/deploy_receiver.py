@@ -159,6 +159,7 @@ def deploy():
                     atomic(download_root / name, data, 0o644)
                 subprocess.run([python, "-m", "venv", str(staging / "runtime")], check=True, timeout=45, stdout=subprocess.DEVNULL)
                 subprocess.run([str(staging / "runtime/bin/python"), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--require-hashes", "--only-binary=:all:", "--index-url", "https://pypi.org/simple", "--retries", "2", "--timeout", "10", "-r", str(staging / "server/requirements.lock")], check=True, timeout=150, stdout=subprocess.DEVNULL)
+                atomic(staging / "config-path", (str(PRIVATE / "config.json") + "\n").encode())
                 atomic(staging / "archive.sha256", (checksum + "\n").encode())
                 os.rename(staging, target)
             finally:
@@ -168,7 +169,7 @@ def deploy():
         if htaccess.is_symlink():
             raise RuntimeError("Hosting configuration cannot be a symlink")
         previous = htaccess.read_bytes() if htaccess.exists() else b"Require all denied\n"
-        settings = f'Options -Indexes\nPassengerAppRoot "{target}/server"\nPassengerBaseURI "/"\nPassengerPython "{wsgi}"\nPassengerAppType wsgi\nPassengerStartupFile passenger_wsgi.py\nSetEnv WM_PUBLIC_CONFIG "{PRIVATE}/config.json"\n'
+        settings = f'Options -Indexes\nPassengerAppRoot "{target}/server"\nPassengerBaseURI "/"\nPassengerPython "{wsgi}"\nPassengerAppType wsgi\nPassengerStartupFile passenger_wsgi.py\n'
         atomic(htaccess, settings.encode(), 0o644)
         if not healthy(origin, tag[1:]):
             atomic(htaccess, previous, 0o644)
