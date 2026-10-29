@@ -164,8 +164,6 @@ jobs:
             environment: public-singapore-dapanel
           - region: fiber100
             environment: public-fiber100
-          - region: uk2
-            environment: public-united-kingdom-secondary
     environment: ${{ matrix.environment }}
     concurrency:
       group: public-receiver-production-${{ matrix.region }}

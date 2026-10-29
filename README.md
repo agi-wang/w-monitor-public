@@ -227,7 +227,7 @@ frontend build. A matching version tag on `main` publishes checksums and artifac
 attestations, then deploys the receiver and website-hosted Agent downloads through
 protected regional environments.
 
-The regional deployment matrix preserves the original three targets and adds five
+The regional deployment matrix preserves the original three targets and adds four
 independent hosting accounts. Each target has its own protected GitHub environment:
 
 | Region code | Public origin | GitHub environment |
@@ -239,7 +239,9 @@ independent hosting accounts. Each target has its own protected GitHub environme
 | `us-mia` | https://us-mia.monitor.20290708.xyz | `public-miami` |
 | `sg-dap` | https://sg-dap.monitor.20290708.xyz | `public-singapore-dapanel` |
 | `fiber100` | https://fiber.monitor.20290708.xyz | `public-fiber100` |
-| `uk2` | https://wm.m.recipes | `public-united-kingdom-secondary` |
+
+Only one receiver account is used per physical server; the original UK receiver
+serves that server without adding a second account.
 
 Each hosting account must pass its receiver bootstrap before its first tagged
 deployment. Keep its database, encryption secret, Redis socket and credentials
