@@ -265,7 +265,7 @@ async function loadSession() {
   } else if (autoRestoreAllowed && !session.space && !session.login.authenticated) {
     const saved = await savedBrowserKey();
     if (saved) {
-      try { await restoreWithKey(saved); } catch (error) { if ([401, 404].includes(error.status)) { try { localStorage.removeItem("wm-active-public-key"); } catch {} } else notice(error.message); }
+      try { await restoreWithKey(saved); } catch (error) { autoRestoreAllowed = false; notice(error.message); session = await api("/api/session"); }
     }
   }
 
