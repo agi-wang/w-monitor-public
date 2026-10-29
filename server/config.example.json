@@ -19,5 +19,9 @@
   "snapshot_cache_ms": 500,
   "offline_grace_ms": 15000,
   "static_assets_url": "",
-  "browser_session_days": 30
+  "browser_session_days": 30,
+  "history_fine_retention_seconds": 900,
+  "history_minute_retention_seconds": 3600,
+  "history_hour_retention_seconds": 2592000,
+  "history_fine_step_seconds": 3
 }

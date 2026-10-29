@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "W Monitor Public API",
-    "version": "1.1.1",
+    "version": "1.2.0",
     "description": "Independent read-only telemetry receiver. No host-control APIs, update executors or private W Monitor dependencies. Recovery and registration secrets are shown once and persisted only as SHA-256 digests. Monitoring-space management does not operate monitored hosts. Dynamic telemetry lives only in encrypted Redis; SQLite holds durable user/space metadata, credential digests and notification delivery bookkeeping. Missing Redis is unknown, never a SQLite telemetry fallback. AES-GCM addresses are purpose-bound and never replace authentication. The backend negotiates zh-CN/en with Accept-Language and returns Content-Language; unsupported languages fall back to en. User/host text is preserved."
   },
   "servers": [
@@ -138,6 +138,15 @@
                     "awaiting_report",
                     "unavailable"
                   ]
+                },
+                "history_key": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{32}$",
+                  "description": "Public snapshots only: page-specific stable pseudonym, not an internal device ID."
+                },
+                "history_ref": {
+                  "type": "string",
+                  "description": "Public snapshots only: page-bound encrypted routing reference for historical public metrics."
                 }
               },
               "additionalProperties": true
@@ -252,6 +261,115 @@
             "pattern": "^[a-f0-9]{128}$"
           }
         }
+      },
+      "MetricHistory": {
+        "type": "object",
+        "required": [
+          "columns",
+          "points",
+          "from",
+          "to",
+          "resolution_seconds",
+          "retention_seconds",
+          "max_retention_seconds",
+          "refresh_ms",
+          "storage",
+          "aggregation"
+        ],
+        "properties": {
+          "columns": {
+            "type": "array",
+            "const": [
+              "time",
+              "cpu_percent",
+              "memory_percent",
+              "disk_percent",
+              "network_rx_bps",
+              "network_tx_bps"
+            ]
+          },
+          "points": {
+            "type": "array",
+            "maxItems": 720,
+            "items": {
+              "type": "array",
+              "minItems": 6,
+              "maxItems": 6,
+              "prefixItems": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              ],
+              "items": false
+            }
+          },
+          "from": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "to": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "resolution_seconds": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retention_seconds": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_retention_seconds": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "refresh_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "storage": {
+            "const": "redis"
+          },
+          "aggregation": {
+            "const": "sample_weighted_mean"
+          }
+        },
+        "additionalProperties": true
       }
     }
   },
@@ -2562,6 +2680,138 @@
           }
         ],
         "description": "Never receives or returns a private key. Challenge expires after 120 seconds and can be consumed once. Signature message is wm-space-v1 + LF + fixed public origin + LF + purpose + LF + sealed challenge. Proof must match the current browser session. Restore rotates session ID/CSRF. Bind/rotate/claim additionally require the current-space operation token; account claim still requires verified W-ID login. Existing bound keys can change only via explicit recovery rotation/claim."
+      }
+    },
+    "/api/devices/{id}/history": {
+      "get": {
+        "summary": "Read resource history for one owned device",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "range",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "15m",
+                "1h",
+                "24h",
+                "7d",
+                "30d",
+                "all"
+              ],
+              "default": "15m"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded weighted historical series; private/no-store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid range or query"
+          },
+          "401": {
+            "description": "Owner session required"
+          },
+          "403": {
+            "description": "Owner operation token denied"
+          },
+          "404": {
+            "description": "Unknown device, wrong-page ref or disabled/rotated publication"
+          },
+          "503": {
+            "description": "Historical storage unavailable or corrupt"
+          }
+        }
+      }
+    },
+    "/api/public/status/{slug}/history": {
+      "get": {
+        "summary": "Read retained public resource history",
+        "security": [],
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "range",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "15m",
+                "1h",
+                "24h",
+                "7d",
+                "30d",
+                "all"
+              ],
+              "default": "15m"
+            }
+          },
+          {
+            "name": "ref",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Encrypted history_ref from this exact enabled page; current selection is checked on each read."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded weighted historical series; private/no-store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid range or query"
+          },
+          "401": {
+            "description": "Owner session required"
+          },
+          "403": {
+            "description": "Owner operation token denied"
+          },
+          "404": {
+            "description": "Unknown device, wrong-page ref or disabled/rotated publication"
+          },
+          "503": {
+            "description": "Historical storage unavailable or corrupt"
+          }
+        }
       }
     }
   }

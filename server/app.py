@@ -21,11 +21,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from redis_cache import RedisCache
+from redis_cache import RedisCache, MetricHistory
 from encryption import SealedData, verify_signature
 from i18n import EN, language, render_html, translate
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 SOURCE_RELEASE = Path(__file__).resolve().parents[1].name
 MAX_BODY = 8 * 1024 * 1024
 WEB = Path(__file__).resolve().parent / "web"
@@ -95,6 +95,11 @@ DATABASE = DATA / "monitor.sqlite3"
 CACHE = RedisCache(CONFIG.get("redis_socket", ""))
 NAMESPACE = "wm-public:" + hashlib.sha256(CONFIG["instance_secret"].encode()).hexdigest()[:16] + ":"
 DYNAMIC = NAMESPACE + "reports"
+HISTORY = MetricHistory(CACHE, BOX, DYNAMIC, (
+    cadence("history_fine_retention_seconds", 900, 60, 86400),
+    cadence("history_minute_retention_seconds", 3600, 60, 604800),
+    cadence("history_hour_retention_seconds", 2592000, 60, 31536000),
+), cadence("history_fine_step_seconds", 3, 1, 60))
 LINK = r"wm1_[A-Za-z0-9_-]{40,320}"
 COOKIE = "__Host-wm_public" if ORIGIN.startswith("https:") else "wm_public_dev"
 
@@ -384,13 +389,18 @@ def offline_after(meta):
     return max(OFFLINE_GRACE / 1000, expected / 1000 * 2.1)
 
 
-def projection(row, meta=None, public=False, available=True):
+def projection(row, meta=None, public=False, available=True, page_id=None):
     received = meta.get("received_at") if isinstance(meta, dict) else None
     online = received >= time.time() - offline_after(meta) if type(received) is int else None
     result = {"name": meta.get("name", row["name"]) if isinstance(meta, dict) else row["name"], "online": online, "last_seen": received, "data_status": "available" if received else "awaiting_report" if available else "unavailable", "cpu_percent": meta.get("cpu") if online else None, "memory_percent": meta.get("memory") if online else None, "disk_percent": meta.get("disk") if online else None, "network_rx_bps": meta.get("network_rx_bps") if online else None, "network_tx_bps": meta.get("network_tx_bps") if online else None}
     if not public:
         result["id"] = row["id"]
         result["agent_id"] = row["agent_id"]
+    else:
+        # A page-specific pseudonym identifies a plotted device without exposing
+        # its private ID. The encrypted routing ref avoids an O(fleet) lookup.
+        result["history_key"] = hmac.new(bytes.fromhex(CONFIG["instance_secret"]), ("history:" + page_id + ":" + row["id"]).encode(), hashlib.sha256).hexdigest()[:32]
+        result["history_ref"] = BOX.seal("history:" + page_id, {"id": row["id"]})
     return result
 
 
@@ -433,7 +443,7 @@ def snapshot(db, space=None, slug=None, number=0):
     # Short shared snapshots follow the configured realtime cadence. Per-report
     # invalidation would rebuild every page of a large fleet dozens of times a
     # second. Ownership/revocation/publication still come from SQLite each read.
-    fingerprint = digest(json.dumps([revision, cached_view[:1] if cached_view else None, title, digest(selection_raw) if selection_raw else None, int(time.time() * 1000) // SNAPSHOT_CACHE, PAGE_REFRESH, SNAPSHOT_CACHE]))
+    fingerprint = digest(json.dumps([VERSION, HISTORY.policy, revision, cached_view[:1] if cached_view else None, title, digest(selection_raw) if selection_raw else None, int(time.time() * 1000) // SNAPSHOT_CACHE, PAGE_REFRESH, SNAPSHOT_CACHE]))
     if cached_view and cached_view[2]:
         try:
             cached = BOX.open("view:" + digest(key), json.loads(cached_view[2]))
@@ -448,7 +458,7 @@ def snapshot(db, space=None, slug=None, number=0):
     total = db.execute("SELECT count(*) FROM devices WHERE " + where, arguments).fetchone()[0]
     rows = db.execute("SELECT id,agent_id,name FROM devices WHERE " + where + " ORDER BY name,id LIMIT 100 OFFSET ?", [*arguments, number * 100]).fetchall()
     metadata, available = live_metadata(rows)
-    result = {"title": title, "devices": [projection(row, metadata.get(row["id"]), bool(slug), available) for row in rows], "read_only": True, "realtime": CONFIG.get("enable_events") is True, "data_available": available, "page": number, "page_size": 100, "total": total, "refresh_ms": PAGE_REFRESH}
+    result = {"title": title, "devices": [projection(row, metadata.get(row["id"]), bool(slug), available, scope if slug else None) for row in rows], "read_only": True, "realtime": CONFIG.get("enable_events") is True, "data_available": available, "page": number, "page_size": 100, "total": total, "refresh_ms": PAGE_REFRESH}
     payload = json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()
     if available:
         CACHE.put(key, BOX.seal("view:" + digest(key), {"fingerprint": fingerprint, "snapshot": payload.decode()}), NAMESPACE + "views")
@@ -535,7 +545,7 @@ def receive(db, environ):
     if isinstance(capabilities, dict) and type(capabilities.get("telemetry.settings")) is int and capabilities["telemetry.settings"] == 1 and all(type(capabilities.get(key)) is bool for key in ("telemetry.metrics", "telemetry.compression")):
         revision = capabilities.get("telemetry.config_revision")
         metadata["agent_settings"] = {"revision": revision if isinstance(revision, str) and re.fullmatch(r"[a-f0-9]{16}", revision) else None, "settings": {"realtime_metrics": capabilities["telemetry.metrics"], "compress_reports": capabilities["telemetry.compression"]}}
-    stored = CACHE.store_metrics(DYNAMIC, device_id, space_id, BOX.seal("metrics:" + device_id, metadata), secrets.token_hex(16)) if metrics else CACHE.store_report(DYNAMIC, device_id, space_id, BOX.seal_report("report:" + device_id, report), BOX.seal("metrics:" + device_id, metadata), secrets.token_hex(16))
+    stored = CACHE.store_report(DYNAMIC, device_id, space_id, None if metrics else BOX.seal_report("report:" + device_id, report), BOX.seal("metrics:" + device_id, metadata), secrets.token_hex(16), HISTORY, metadata)
     if stored != 1:
         raise Rejected(503, "实时数据存储暂不可用；本次上报未确认")
     try:
@@ -623,6 +633,23 @@ def events(environ, slug=None):
     return stream()
 
 
+def history_query(environ, public=False):
+    query = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
+    if not set(query) <= ({"range", "ref"} if public else {"range"}) or any(len(items) != 1 for items in query.values()):
+        raise Rejected(400, "无效历史查询")
+    selection = query.get("range", ["15m"])[0]
+    if selection not in (*MetricHistory.ranges, "all"):
+        raise Rejected(400, "无效历史查询")
+    return selection, query.get("ref", [""])[0]
+
+
+def history_snapshot(device, selection):
+    try:
+        return HISTORY.read(device, selection)
+    except (ConnectionError, ValueError):
+        raise Rejected(503, "历史数据暂时不可用，请稍后重试") from None
+
+
 def route(db, environ):
     method, path = environ.get("REQUEST_METHOD", "GET"), environ.get("PATH_INFO", "/")
     locale = language(environ.get("HTTP_ACCEPT_LANGUAGE", ""))
@@ -649,6 +676,17 @@ def route(db, environ):
         return 200, {"available": False}, []
     if method == "POST" and path == "/api/v1/report":
         return 200, receive(db, environ), []
+    if method == "GET" and re.fullmatch(r"/api/public/status/" + LINK + "/history", path):
+        slug = path.split("/")[-2]
+        page_id = link_payload("public", slug)
+        selection, reference = history_query(environ, public=True)
+        page = db.execute("SELECT id,space_id,selection FROM pages WHERE id=? AND slug_hash=? AND enabled=1", (page_id, digest(slug))).fetchone()
+        if not page:
+            raise Rejected(404, "此分享链接已停用或不存在")
+        device = link_payload("history:" + page_id, reference)
+        if not db.execute("SELECT id FROM devices WHERE id=? AND space_id=? AND id IN (SELECT value FROM json_each(?))", (device, page["space_id"], page["selection"])).fetchone():
+            raise Rejected(404, "设备不存在")
+        return 200, history_snapshot(device, selection), []
     if method == "GET" and re.fullmatch(r"/api/public/status/" + LINK, path):
         return 200, snapshot(db, slug=path.rsplit("/", 1)[1], number=page_number(environ)), []
     session, headers = browser_session(db, environ, create=path == "/api/session" and method == "GET")
@@ -685,6 +723,14 @@ def route(db, environ):
         space = current_space(db, session)
         operation_guard(environ, space)
         return 200, snapshot(db, space, number=page_number(environ)), headers
+    if method == "GET" and re.fullmatch(r"/api/devices/[a-f0-9]{32}/history", path):
+        space = current_space(db, session)
+        operation_guard(environ, space)
+        selection, _ = history_query(environ)
+        device = path.split("/")[3]
+        if not db.execute("SELECT id FROM devices WHERE id=? AND space_id=?", (device, space["id"])).fetchone():
+            raise Rejected(404, "设备不存在")
+        return 200, history_snapshot(device, selection), headers
     if method == "GET" and path == "/api/device-options":
         space = current_space(db, session)
         operation_guard(environ, space)

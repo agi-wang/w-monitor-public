@@ -1,4 +1,4 @@
-# Public monitoring contract v1.1.0
+# Public monitoring contract v1.2.0
 
 [OpenAPI](server/openapi.json) describes browser, ingestion and public-status APIs.
 This receiver implements the existing v1.0 full report envelope; it has no Private
@@ -207,3 +207,26 @@ Existing devices, tokens, pages and account relationships remain unchanged.
 Browser cookies persist 30 days by default; browser_session_days accepts 7-365.
 The IndexedDB key is non-exportable; logout clears the active-key reference,
 while saved account ownership remains server-side for explicit future login.
+
+## Redis-backed historical resource samples (v1.2.0)
+
+GET `/api/devices/{id}/history?range=15m` requires the same owner session and
+operation token as complete device reads. Public snapshots add `history_key`
+(page-specific opaque pseudonym) and `history_ref` (page-bound encrypted routing
+reference). GET `/api/public/status/{slug}/history?ref=REFERENCE&range=15m` checks
+the current slug, enabled page, tenant and selected device on every read. A ref
+from another page, removed device or old/disabled page is rejected with404.
+These refs never grant access to complete reports or device operations.
+
+`range` is one of `15m`, `1h`, `24h`, `7d`, `30d`, `all` (default `15m`). Response
+`columns` is `[time,cpu_percent,memory_percent,disk_percent,network_rx_bps,network_tx_bps]`;
+`points` is an ordered array of corresponding six-element rows, at most720, with
+Unix-second bucket starts and null for a missing metric. Unknown fields remain
+tolerated. `from`, `to`, `resolution_seconds`, `retention_seconds`,
+`max_retention_seconds` and `refresh_ms` describe the bounded returned range.
+`storage=redis`, `aggregation=sample_weighted_mean`. Queries select retained
+second/minute/hour tiers and aggregate weighted counts for wider ranges. Reports
+retain their existing envelope and cadence; server rollout needs no Agent update.
+Historical samples are acknowledged atomically with current telemetry; Redis or
+CAS failures return503. Responses remain private/no-store; shared server cache
+is encrypted and does not bypass publication or owner authorization.

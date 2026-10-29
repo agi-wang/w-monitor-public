@@ -1,6 +1,6 @@
 [package]
 name = "w-monitor-lite"
-version = "1.1.1"
+version = "1.2.0"
 edition = "2021"
 license = "MIT"
 description = "Read-only Linux host monitoring agent. No remote control or self-updater."

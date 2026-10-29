@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.1.1**; the release series starts at **v1.0.0**.
+The current release is **v1.2.0**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -281,7 +281,10 @@ unknown collector types. System, CPU, memory, disks, network, processes, contain
 services and security data render as sections/tables. Long lists are searchable
 and paginated; no rows are discarded. The realtime overview stays separate from
 the last-full-snapshot timestamp. Raw JSON is available on demand and as a complete
-local download. Public pages continue to use their deliberately limited projection.
+local download. Collector navigation covers every reported type, including unknown
+types. Percentage fields render as occupancy bars, status/severity fields as badges,
+and collector envelopes expose their data while retaining status/error details.
+Public pages continue to use their deliberately limited projection.
 
 ### Device entrypoints and live trends
 
@@ -291,9 +294,54 @@ the public dialog uses only the already-published scalar metrics and never fetch
 a private report. The device list also shows a CPU sparkline. Private details
 retain all collector sections and an explicit full-snapshot refresh button.
 
-Charts record samples received while this page is open, retaining at most 15
-minutes / 300 samples per device and 200 devices per browser page. Reloading starts
-a new recording. Duplicate samples are skipped and gaps are not interpolated;
-these charts are not a server-side historical archive. Public link revocation or
-read failure closes its dialog and clears the buffered samples. No additional
-telemetry requests, database writes or Redis retention are introduced.
+Historical curves are read from the receiver's Redis, so page reloads and other
+browsers show the same retained samples. Choose 15 minutes, 1 hour, 24 hours,
+7 days, 30 days or all retained history. Missing samples stay missing; offline
+periods are not filled with zeros. The live overview remains separate from the
+selected historical averages. The browser keeps only a small response cache;
+it never owns or reconstructs the history.
+
+### Tiered Redis history
+
+| Startup setting | Default | Meaning |
+| --- | --- | --- |
+| `history_fine_retention_seconds` | 900 | Keep second buckets for the latest 15 minutes |
+| `history_minute_retention_seconds` | 3,600 | Keep minute means for the latest hour |
+| `history_hour_retention_seconds` | 2,592,000 | Keep hourly means for 30 days |
+| `history_fine_step_seconds` | 3 | Fine-range query aggregation, a divisor of 60 |
+
+All three tiers consume the original accepted samples. Each metric has its own
+sample count; higher-level or long-range averages are sample-weighted, never
+an unweighted average of averages. Seconds without reports consume no records.
+The receiver's clock defines UTC-aligned buckets; delayed reports are recorded
+at receive time. Float32 means provide about seven significant digits, with
+uint16 counts (the existing accepted-report cadence fits this representation).
+
+A bucket uses 32 packed bytes for slot + five means + five counts before zlib
+compression and purpose-bound AES-GCM encryption. Records are grouped into minute,
+hour and day chunks. Absolute TTLs expire each chunk independently, including
+on offline devices. Reads enforce the configured cutoff; physical expiry can
+retain at most one additional chunk (minute/hour/day) at a tier boundary. A bounded per-device index supports immediate removal without
+global scans. Reducing retention filters reads immediately and shortens existing
+chunk TTLs on the next report; extending retention cannot recover expired data.
+Fine/minute/hour retention must be ordered and at most 1/7/365 days respectively.
+
+Writes atomically compare/update all three encrypted chunks together with current
+telemetry. CAS conflicts retry at most twice; failure returns 503 without an ingest
+acknowledgement. There are no additional SQLite writes for steady-state reports.
+Shared encrypted response caches expire after 2/5/30 seconds for fine/minute/hour
+views; fine views are also invalidated by incoming reports. Queries return at most
+720 points, using weighted aggregation when a long range needs coarser resolution.
+Only the selected device's history is fetched. No per-point Redis keys, global
+history scans, background per-viewer collectors or RedisTimeSeries dependency.
+
+Public history requires the current enabled page, a page-bound encrypted routing
+reference and current device selection. Its stable `history_key` is a page-specific
+pseudonym, never a private device ID. Private history requires owner session and
+operation token. Removing a device deletes its indexed chunks and response caches;
+disabling/rotating a page immediately prevents new historical reads. Historical
+resource values are encrypted at rest and never include private collector data.
+
+History starts accumulating when this version is activated; older unsaved samples
+cannot be backfilled. Redis persistence/eviction follows the account's configured
+Redis policy; this is retained telemetry, not a permanent archive or backup.
