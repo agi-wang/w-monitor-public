@@ -1664,6 +1664,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "w-monitor-collectors"
+version = "0.1.0"
+source = "git+https://github.com/agi-wang/w-monitor-collectors?rev=9c58d091f0aff682d6296cb7862422b6200be3a8#9c58d091f0aff682d6296cb7862422b6200be3a8"
+dependencies = [
+ "libc",
+ "parking_lot",
+ "serde_json",
+ "sha2",
+ "sysinfo",
+]
+
+[[package]]
 name = "w-monitor-lite"
 version = "1.3.4"
 dependencies = [
@@ -1688,6 +1700,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "w-hostmetrics",
+ "w-monitor-collectors",
  "w-monitor-lite-protocol",
 ]
 

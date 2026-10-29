@@ -12,6 +12,7 @@ members = ["protocol", "vendor/w-hostmetrics"]
 resolver = "2"
 
 [dependencies]
+w-monitor-collectors = { git = "https://github.com/agi-wang/w-monitor-collectors", rev = "9c58d091f0aff682d6296cb7862422b6200be3a8" }
 w-monitor-lite-protocol = { path = "protocol" }
 w-hostmetrics = { path = "vendor/w-hostmetrics" }
 anyhow = "1.0"

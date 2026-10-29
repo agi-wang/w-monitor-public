@@ -132,6 +132,19 @@ sensitive host metadata; choose a receiver you trust.
 
 ## Architecture
 
+The Agent consumes the public [w-monitor-collectors](https://github.com/agi-wang/w-monitor-collectors)
+crate at an exact Git commit
+for hardware metrics, network accounting/traffic parsing and mount health. Public
+and Private pin the same reviewed collector revision while keeping their own
+configuration, transports, receivers and release pipelines. Updating the shared
+source does not update an installed Agent or publish either product automatically.
+
+The shared dependency contains read-only collection and bounded diagnostic
+subprocesses. It has no dependency on W Monitor Private, control handlers, inbound
+control listeners or automatic updaters. Public keeps scheduling, software and
+security inventory, registration and reporting in this repository. Inspect the
+pinned dependency source and Cargo dependency graph when changing its revision.
+
 | Component | Responsibility |
 | --- | --- |
 | Rust Lite Agent | Collect and send outbound HTTPS telemetry |

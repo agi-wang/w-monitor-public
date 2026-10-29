@@ -1,10 +1,9 @@
 mod diting;
-mod hardware;
-mod mount_health;
 mod project_status;
 mod security;
-mod traffic;
 mod web_hosts;
+
+use w_monitor_collectors::{hardware, mount_health, traffic};
 
 pub use hardware::NetworkRateCache;
 pub use traffic::{PingCache, TracerouteCache};
