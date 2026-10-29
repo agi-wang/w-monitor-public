@@ -149,7 +149,63 @@ class GitHub:
 
 
 def shared_package(lock):
-    return next(package for package in tomllib.loads(lock)["package"] if package["name"] == "w-monitor-collectors")
+    packages = [package for package in tomllib.loads(lock)["package"] if package["name"] == "w-monitor-collectors"]
+    require(len(packages) == 1, "Exactly one shared collector lock root is required")
+    return packages[0]
+
+
+def lock_graph(text):
+    document = tomllib.loads(text)
+    packages = {(package["name"], package["version"], package.get("source", "")): package for package in document["package"]}
+    require(len(packages) == len(document["package"]), "Duplicate lock package identity")
+    edges = {}
+    for identity, package in packages.items():
+        dependencies = set()
+        for dependency in package.get("dependencies", []):
+            parts = dependency.split(" ", 2)
+            require(len(parts) < 3 or (parts[2].startswith("(") and parts[2].endswith(")")), "Unsupported lock dependency identity")
+            matches = [key for key in packages if key[0] == parts[0] and (len(parts) < 2 or key[1] == parts[1]) and (len(parts) < 3 or key[2] == parts[2][1:-1])]
+            require(len(matches) == 1, "Ambiguous or missing lock dependency")
+            dependencies.add(matches[0])
+        edges[identity] = dependencies
+    return document, packages, edges
+
+
+def reachable(edges, root):
+    seen, pending = set(), [root]
+    while pending:
+        identity = pending.pop()
+        if identity not in seen:
+            seen.add(identity)
+            pending.extend(edges[identity] - seen)
+    return seen
+
+
+def validate_lock(before, after, value):
+    old_doc, old_packages, old_edges = lock_graph(before)
+    new_doc, new_packages, new_edges = lock_graph(after)
+    require({key: item for key, item in old_doc.items() if key != "package"} == {key: item for key, item in new_doc.items() if key != "package"}, "Unrelated lock metadata changed")
+    old_shared, new_shared = shared_package(before), shared_package(after)
+    require(new_shared["version"] == value["shared_version"] and new_shared["source"] == "git+https://github.com/" + SHARED + "?rev=" + value["shared_sha"] + "#" + value["shared_sha"], "New lock root does not match the exact shared release")
+    old_root = (old_shared["name"], old_shared["version"], old_shared["source"])
+    new_root = (new_shared["name"], new_shared["version"], new_shared["source"])
+    require({key[0] for key in new_edges[new_root]} == ALLOWED_DEPS, "Shared direct lock dependency boundary changed")
+    require(not {"w-monitor-sdk", "w-monitor-service"} & {key[0] for key in new_packages}, "Private runtime in regenerated lock graph")
+    causal = reachable(old_edges, old_root) | reachable(new_edges, new_root)
+
+    def record(package, edges):
+        return {**{key: item for key, item in package.items() if key != "dependencies"}, "dependencies": sorted(edges - causal)}
+
+    def outside(packages, edges):
+        return {key: record(package, edges[key]) for key, package in packages.items() if key not in causal and key[0] != "w-monitor-lite"}
+
+    require(outside(old_packages, old_edges) == outside(new_packages, new_edges), "Lock update changed packages outside the shared dependency closures")
+    old_apps = [key for key in old_packages if key[0] == "w-monitor-lite"]
+    new_apps = [key for key in new_packages if key[0] == "w-monitor-lite"]
+    require(len(old_apps) == len(new_apps) == 1, "Exactly one Public application lock root is required")
+    old_app, new_app = old_apps[0], new_apps[0]
+    require(old_root in old_edges[old_app] and new_root in new_edges[new_app], "Application does not consume the exact shared lock root")
+    require({**record(old_packages[old_app], old_edges[old_app]), "version": value["product_version"]} == record(new_packages[new_app], new_edges[new_app]), "Unrelated application lock dependency changed")
 
 
 def replace_once(text, old, new):
@@ -177,16 +233,10 @@ def expected_files(before, value, lock):
     require(version(value["shared_version"]) > version(package["version"]), "Shared version must strictly increase")
     old_pin = tomllib.loads(before["Cargo.toml"])["dependencies"]["w-monitor-collectors"]
     require(old_pin.get("git") == "https://github.com/" + SHARED and re.fullmatch(r"[a-f0-9]{40}", old_pin.get("rev", "")), "Current shared dependency must use a fixed public commit")
+    require(package["source"] == "git+https://github.com/" + SHARED + "?rev=" + old_pin["rev"] + "#" + old_pin["rev"], "Current shared lock root differs from the pinned manifest")
     result = release_files(before, old, value["product_version"])
     result["Cargo.toml"] = replace_once(result["Cargo.toml"], old_pin["rev"], value["shared_sha"])
-    previous, updated = tomllib.loads(before["Cargo.lock"]), tomllib.loads(lock)
-    expected = json.loads(json.dumps(previous))
-    app = next(package for package in expected["package"] if package["name"] == "w-monitor-lite")
-    app["version"] = value["product_version"]
-    package = next(package for package in expected["package"] if package["name"] == "w-monitor-collectors")
-    package["version"] = value["shared_version"]
-    package["source"] = "git+https://github.com/" + SHARED + "?rev=" + value["shared_sha"] + "#" + value["shared_sha"]
-    require(expected == updated, "Lock update changed dependencies outside the existing shared package/version")
+    validate_lock(before["Cargo.lock"], lock, value)
     result["Cargo.lock"] = lock
     return result
 

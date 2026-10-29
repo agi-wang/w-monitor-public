@@ -339,8 +339,11 @@ have successful tag CI and a matching package manifest version at that exact
 immutable commit. One deterministic bot branch
 and PR pin that commit and increment the Public patch release. Only `Cargo.toml`,
 `Cargo.lock`, receiver/OpenAPI versions and the README/protocol version declarations
-may change; unrelated locked packages and the five-dependency boundary must remain
-unchanged. An incompatible dependency change requires manual review instead.
+may change. Lock changes are limited to the old/new exact shared package
+dependency closures; unrelated packages and non-causal dependency edges must stay
+unchanged. Shared dependency and transitive upgrades within those closures are
+allowed, while the five-direct-dependency boundary remains fixed. An incompatible
+boundary change requires manual review instead.
 
 The reconciler explicitly dispatches the existing CI on the bot branch because
 `GITHUB_TOKEN`-created commits and PRs do not trigger ordinary push/PR workflows.
