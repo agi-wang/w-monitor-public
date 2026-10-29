@@ -8,14 +8,12 @@ public_origin=""
 language=en
 agent_args=()
 verify_provenance=false
-download_origin=https://monitor.20290708.xyz
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --key|--endpoint|--config) [ "$#" -ge 2 ] || exit 2; agent_args+=("$1" "$2");
-      if [ "$1" = --endpoint ]; then download_origin="${2%/api/v1/report}"; fi
       shift 2 ;;
     --verify-provenance) verify_provenance=true; shift ;;
-    --public) [ "$#" -ge 2 ] || exit 2; public_origin="$2"; download_origin="${2%/}"; shift 2 ;;
+    --public) [ "$#" -ge 2 ] || exit 2; public_origin="$2"; shift 2 ;;
     --language) [ "$#" -ge 2 ] || exit 2; language="$2"; shift 2 ;;
     v*) [ -z "$version" ] || exit 2; version="$1"; shift ;;
     *) echo 'Usage: install.sh [vX.Y.Z] [--public https://monitor.example.com | --key KEY] [--endpoint URL] [--config FILE] [--language en|zh-CN] [--verify-provenance]' >&2; exit 2 ;;
@@ -33,18 +31,20 @@ case "$(uname -m)" in
   *) echo 'Supported architectures: x86_64 and aarch64' >&2; exit 1 ;;
 esac
 if [ -z "$version" ]; then
-  version=$(curl -fsSL --proto '=https' --tlsv1.2 --max-time 20 --retry 2 --max-filesize 1048576 \
-    "$download_origin/downloads/version.txt")
+  release_url=$(curl -fsSLI --proto '=https' --proto-redir '=https' --tlsv1.2 --max-time 20 --retry 2 \
+    --output /dev/null --write-out '%{url_effective}' "https://github.com/$REPOSITORY/releases/latest")
+  [[ "$release_url" == "https://github.com/$REPOSITORY/releases/tag/"* ]] || { echo 'Invalid release URL' >&2; exit 1; }
+  version="${release_url##*/}"
 fi
 [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid release tag' >&2; exit 1; }
 asset="w-monitor-lite-$platform"
 temporary=$(mktemp -d)
 trap 'rm -rf -- "$temporary"' EXIT
-base="$download_origin/downloads/$version"
+base="https://github.com/$REPOSITORY/releases/download/$version"
 files=("$asset" "$asset.sha256")
 if $verify_provenance; then files+=(provenance.jsonl); fi
 for file in "${files[@]}"; do
-  curl -fsSL --proto '=https' --tlsv1.2 --max-time 120 --retry 2 --max-filesize 134217728 \
+  curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --max-time 120 --retry 2 --max-filesize 134217728 \
     "$base/$file" -o "$temporary/$file"
 done
 (cd "$temporary" && sha256sum -c "$asset.sha256")

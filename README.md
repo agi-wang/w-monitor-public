@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release series starts at **v1.0.0**.
+The current release is **v1.0.1**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -19,14 +19,16 @@ The website generates an installation command for its own region. For example:
 
 ```sh
 curl -fsSL --proto '=https' --max-time 30 \
-  https://monitor.20290708.xyz/downloads/install.sh \
+  https://github.com/agi-wang/w-monitor-public/releases/latest/download/install.sh \
   | bash -s -- --public https://monitor.20290708.xyz --language en
 ```
 
-This downloads the Linux Agent from that site, checks its SHA-256 checksum,
+This downloads the Linux Agent and checksum from the public GitHub Release, checks SHA-256,
 creates an anonymous space and public page, saves a private configuration, and
 starts the Agent. The terminal prints a recovery key, management URL, and public
 URL. The first connected device is selected for the initial public page.
+The download source is shared across regions; `--public` or `--endpoint` chooses
+only the registration and telemetry destination. An explicit `vX.Y.Z` pins a release.
 
 Requirements: Linux AMD64 or ARM64, Bash, curl, and standard GNU utilities including
 `sha256sum`. The Agent does not require Python or GitHub CLI. Optional installer
