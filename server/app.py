@@ -25,7 +25,7 @@ from redis_cache import RedisCache
 from encryption import SealedData
 from i18n import EN, language, render_html, translate
 
-VERSION = "1.0.83"
+VERSION = "1.0.84"
 SOURCE_RELEASE = Path(__file__).resolve().parents[1].name
 MAX_BODY = 8 * 1024 * 1024
 WEB = Path(__file__).resolve().parent / "web"

@@ -49,7 +49,8 @@ def deploy(origin, user, private, python, data, tag, checksum):
     # an atomic one-shot guard even when pip spans more than one Cron tick.
     command = "umask 077; if [ ! -e " + q(status) + " ] && mkdir " + q(lock) + " 2>/dev/null; then "
     command += "SSH_ORIGINAL_COMMAND=" + q("deploy " + tag + " " + checksum) + " " + q(python) + " " + q(home + "/deploy_receiver.py") + " < " + q(incoming) + " > " + q(log) + " 2>&1; wm_exit=$?; "
-    command += "printf '{\"exit\":%s}' \"$wm_exit\" > " + q(status) + "; rm -f -- " + q(incoming) + "; fi"
+    # Cron treats even quoted percent signs as stdin separators.
+    command += "echo '{\"exit\":'\"$wm_exit\"'}' > " + q(status) + "; rm -f -- " + q(incoming) + "; fi"
     api2("Cron", "add_line", dict(minute="*", hour="*", day="*", month="*", weekday="*", command=command))
     completed = False
     try:
