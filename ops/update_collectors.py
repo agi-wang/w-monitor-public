@@ -157,6 +157,18 @@ def replace_once(text, old, new):
     return text.replace(old, new)
 
 
+def release_files(before, old, new):
+    declarations = {
+        "Cargo.toml": 'version = "{version}"',
+        "Cargo.lock": 'name = "w-monitor-lite"\nversion = "{version}"',
+        "server/app.py": 'VERSION = "{version}"',
+        "server/openapi.json": '"version": "{version}"',
+        "README.md": 'The current release is **v{version}**',
+        "PROTOCOL.md": '# Public monitoring contract v{version}',
+    }
+    return {name: replace_once(before[name], declaration.format(version=old), declaration.format(version=new)) for name, declaration in declarations.items()}
+
+
 def expected_files(before, value, lock):
     old = tomllib.loads(before["Cargo.toml"])["package"]["version"]
     numbers = version(old)
@@ -165,7 +177,7 @@ def expected_files(before, value, lock):
     require(version(value["shared_version"]) > version(package["version"]), "Shared version must strictly increase")
     old_pin = tomllib.loads(before["Cargo.toml"])["dependencies"]["w-monitor-collectors"]
     require(old_pin.get("git") == "https://github.com/" + SHARED and re.fullmatch(r"[a-f0-9]{40}", old_pin.get("rev", "")), "Current shared dependency must use a fixed public commit")
-    result = {name: replace_once(text, old, value["product_version"]) for name, text in before.items() if name != "Cargo.lock"}
+    result = release_files(before, old, value["product_version"])
     result["Cargo.toml"] = replace_once(result["Cargo.toml"], old_pin["rev"], value["shared_sha"])
     previous, updated = tomllib.loads(before["Cargo.lock"]), tomllib.loads(lock)
     expected = json.loads(json.dumps(previous))
@@ -300,8 +312,8 @@ def prepare(api, base, value):
     require(all((ROOT / name).read_text() == text for name, text in before.items()), "Checkout is not the expected clean main source")
     old = tomllib.loads(before["Cargo.toml"])["package"]["version"]
     pin = tomllib.loads(before["Cargo.toml"])["dependencies"]["w-monitor-collectors"]["rev"]
-    for name in FILES:
-        (ROOT / name).write_text(replace_once(before[name], old, value["product_version"]))
+    for name, text in release_files(before, old, value["product_version"]).items():
+        (ROOT / name).write_text(text)
     path = ROOT / "Cargo.toml"
     path.write_text(replace_once(path.read_text(), pin, value["shared_sha"]))
     subprocess.run(["cargo", "metadata", "--format-version", "1"], cwd=ROOT, timeout=180, check=True, stdout=subprocess.DEVNULL)
