@@ -26,11 +26,25 @@ jobs:
         with:
           ref: main
           persist-credentials: false
+      - name: Mint the dedicated repository-only PR creator token
+        id: collectors-app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.COLLECTORS_APP_ID }}
+          private-key: ${{ secrets.COLLECTORS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: w-monitor-public
+          permission-contents: write
+          permission-pull-requests: write
       - name: Install the pinned Cargo toolchain
         run: rustup toolchain install 1.96.0 --profile minimal
       - name: Reconcile one shared update through release and deployment
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          COLLECTORS_APP_TOKEN: ${{ steps.collectors-app.outputs.token }}
+          COLLECTORS_APP_SLUG: ${{ steps.collectors-app.outputs.app-slug }}
+          COLLECTORS_APP_BOT_LOGIN: ${{ vars.COLLECTORS_APP_BOT_LOGIN }}
+          COLLECTORS_SUPERSEDE_PR: ${{ vars.COLLECTORS_SUPERSEDE_PR }}
           RUSTUP_TOOLCHAIN: 1.96.0
           CARGO_NET_RETRY: '2'
           DRY_RUN: ${{ inputs.dry_run == true }}

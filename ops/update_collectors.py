@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reconcile a narrowly scoped shared-collector PR using only GITHUB_TOKEN."""
+"""Reconcile shared-collector PRs with a dedicated creator App and repository token."""
 import argparse
 import base64
 import json
@@ -17,8 +17,8 @@ REPO = "agi-wang/w-monitor-public"
 SHARED = "agi-wang/w-monitor-collectors"
 PREFIX = "codex/collectors-update-"
 MARKER = "w-monitor-collectors-sync:"
-BOT = "github-actions[bot]"
-BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
+LEGACY_BOT = "github-actions[bot]"
+LEGACY_BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
 FILES = ("Cargo.toml", "Cargo.lock", "server/app.py", "server/openapi.json", "README.md", "PROTOCOL.md")
 ALLOWED_DEPS = {"libc", "parking_lot", "serde_json", "sha2", "sysinfo"}
 DEPLOY_JOBS = {
@@ -68,18 +68,21 @@ def metadata(message):
     return value
 
 
-def branch_name(value):
-    return PREFIX + value["shared_version"] + "-" + value["shared_sha"][:12]
+def branch_name(value, legacy=False):
+    name = PREFIX + value["shared_version"] + "-" + value["shared_sha"][:12]
+    return name if legacy else name + "-" + value["base"][:12]
 
 
 class GitHub:
     def __init__(self, token, dry_run=False):
         self.token, self.dry_run = token, dry_run
+        self.bot_login = self.bot_email = None
         self.opener = build_opener(NoRedirect())
 
     def call(self, repo, path, method="GET", data=None, missing=False):
-        require(repo in (REPO, SHARED), "Repository outside synchronization scope")
-        require(method == "GET" or (repo == REPO and self.token and not self.dry_run), "Mutation requires repository GITHUB_TOKEN and live mode")
+        identity_read = repo is None and method == "GET" and (path == "/installation/repositories?per_page=100" or re.fullmatch(r"/users/[a-z0-9][a-z0-9-]*%5Bbot%5D", path))
+        require(repo in (REPO, SHARED) or identity_read, "Repository outside synchronization scope")
+        require(method == "GET" or (repo == REPO and self.token and not self.dry_run), "Mutation requires a repository-scoped token and live mode")
         headers = {"Accept": "application/vnd.github+json", "User-Agent": "w-monitor-collectors-sync", "X-GitHub-Api-Version": "2022-11-28"}
         if self.token:
             headers["Authorization"] = "Bearer " + self.token
@@ -87,7 +90,7 @@ class GitHub:
             headers["Content-Type"] = "application/json"
         for attempt in range(3 if method == "GET" else 1):
             try:
-                request = Request("https://api.github.com/repos/" + repo + path, headers=headers, data=json.dumps(data).encode() if data is not None else None, method=method)
+                request = Request("https://api.github.com" + ("/repos/" + repo if repo else "") + path, headers=headers, data=json.dumps(data).encode() if data is not None else None, method=method)
                 with self.opener.open(request, timeout=30) as response:
                     raw = response.read(16 * 1024 * 1024 + 1)
                 require(len(raw) <= 16 * 1024 * 1024, "GitHub response exceeds bound")
@@ -146,6 +149,22 @@ class GitHub:
             require(obj["type"] == "tag", "Tag must resolve to a commit")
             obj = self.call(repo, "/git/tags/" + obj["sha"])["object"]
         raise SyncError("Annotated tag nesting exceeds bound")
+
+
+def creator_app(api):
+    token = os.environ.get("COLLECTORS_APP_TOKEN", "")
+    slug = os.environ.get("COLLECTORS_APP_SLUG", "")
+    expected = os.environ.get("COLLECTORS_APP_BOT_LOGIN", "")
+    require(token and re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug) and expected == slug + "[bot]", "Dedicated creator App and independently configured bot login are required")
+    writer = GitHub(token, api.dry_run)
+    installation = writer.call(None, "/installation/repositories?per_page=100")
+    require(installation["total_count"] == 1 and [repo["full_name"] for repo in installation["repositories"]] == [REPO], "Creator token must be restricted to this repository only")
+    user = writer.call(None, "/users/" + quote(expected, safe=""))
+    require(user["login"] == expected and user["type"] == "Bot" and type(user["id"]) is int and user["id"] > 0, "Creator bot user identity could not be verified")
+    api.bot_login = writer.bot_login = expected
+    api.bot_email = writer.bot_email = str(user["id"]) + "+" + expected + "@users.noreply.github.com"
+    print("Verified repository-only creator App:", expected, flush=True)
+    return writer
 
 
 def shared_package(lock):
@@ -241,29 +260,35 @@ def expected_files(before, value, lock):
     return result
 
 
-def run_matches(api, ref, sha):
-    return [run for run in api.pages(REPO, "/actions/workflows/ci.yml/runs?" + urlencode({"event": "workflow_dispatch", "head_sha": sha}), "workflow_runs") if run["head_sha"] == sha and run["head_branch"] == ref and run["event"] == "workflow_dispatch"]
+def run_matches(api, ref, sha, event="workflow_dispatch", pr_number=None):
+    return [run for run in api.pages(REPO, "/actions/workflows/ci.yml/runs?" + urlencode({"event": event, "head_sha": sha}), "workflow_runs") if run["head_sha"] == sha and run["head_branch"] == ref and run["event"] == event and (pr_number is None or any(pr["number"] == pr_number for pr in run["pull_requests"]))]
 
 
-def ensure_ci(api, ref, sha, stage, deadline):
-    runs = run_matches(api, ref, sha)
+def ensure_ci(api, ref, sha, stage, deadline, pr_number=None):
+    event = "pull_request" if stage == "branch" else "workflow_dispatch"
+    require(stage != "branch" or pr_number is not None, "Natural PR CI requires an exact PR identity")
+    runs = run_matches(api, ref, sha, event, pr_number)
     if not runs:
-        api.call(REPO, "/actions/workflows/ci.yml/dispatches", "POST", {"ref": ref})
-        print("Dispatched CI once:", stage, ref, sha, flush=True)
+        if stage != "branch":
+            api.call(REPO, "/actions/workflows/ci.yml/dispatches", "POST", {"ref": ref})
+            print("Dispatched CI once:", stage, ref, sha, flush=True)
+        else:
+            print("Waiting for natural pull_request CI:", pr_number, sha, flush=True)
         # Accepted dispatches become visible asynchronously. Never dispatch again
         # within this invocation; the next schedule queries the same ref/SHA.
         while time.monotonic() < deadline:
             time.sleep(15)
-            runs = run_matches(api, ref, sha)
+            runs = run_matches(api, ref, sha, event, pr_number)
             if runs:
                 break
         if not runs:
-            print("Waiting for accepted CI dispatch to appear", flush=True)
+            print("Waiting for required CI to appear; no branch dispatch can replace PR approval", flush=True)
             return False
     run_id = max(runs, key=lambda run: run["id"])["id"]
     while True:
         run = api.call(REPO, "/actions/runs/" + str(run_id))
-        require(run["head_sha"] == sha and run["head_branch"] == ref, "CI reference changed")
+        require(run["head_sha"] == sha and run["head_branch"] == ref and run["event"] == event and (pr_number is None or any(pr["number"] == pr_number for pr in run["pull_requests"])), "CI reference/event/PR changed")
+        require(run.get("conclusion") != "action_required", "Natural PR CI requires approval; dispatch CI cannot bypass it")
         if run["status"] == "completed":
             require(run["conclusion"] == "success", "CI failed; repair or rerun failed jobs manually before reconciliation: " + str(run_id))
             jobs = api.pages(REPO, "/actions/runs/" + str(run_id) + "/jobs?filter=all", "jobs")
@@ -299,11 +324,13 @@ def verify_shared(api, value):
     require(latest["conclusion"] == "success", "Shared tag CI failed at the exact commit")
 
 
-def validate_candidate(api, pr):
+def validate_candidate(api, pr, legacy=False):
     commit = api.call(REPO, "/git/commits/" + pr["head"]["sha"])
     value = metadata(commit["message"])
-    require(pr["head"]["repo"]["full_name"] == REPO and pr["head"]["ref"] == branch_name(value), "Unexpected PR source branch")
-    require(pr["user"]["login"] == BOT and commit["committer"]["email"] == BOT_EMAIL, "Automation will not modify a human branch/PR")
+    require(pr["head"]["repo"]["full_name"] == REPO and pr["head"]["ref"] == branch_name(value, legacy), "Unexpected PR source branch")
+    expected_login = LEGACY_BOT if legacy else api.bot_login
+    expected_email = LEGACY_BOT_EMAIL if legacy else api.bot_email
+    require(expected_login and expected_email and pr["user"]["login"] == expected_login and commit["committer"]["email"] == expected_email, "Automation will not modify an unverified creator branch/PR")
     require([parent["sha"] for parent in commit["parents"]] == [value["base"]], "Candidate has additional or human commits")
     before, after = api.files(value["base"]), api.files(pr["head"]["sha"])
     require(after == expected_files(before, value, after["Cargo.lock"]), "Candidate content differs from the allowed pin/patch-only update")
@@ -319,7 +346,7 @@ def reconcile(api, pr, deadline):
     if not pr["merged_at"]:
         require(pr["state"] == "open", "A human closed the automation PR; manual resolution required")
         require(api.main() == value["base"], "Main advanced; refusing an untested rebase/merge")
-        if not ensure_ci(api, pr["head"]["ref"], pr["head"]["sha"], "branch", deadline):
+        if not ensure_ci(api, pr["head"]["ref"], pr["head"]["sha"], "branch", deadline, pr_number=pr["number"]):
             return False
         # Repository protection must require up-to-date checks to close the
         # remaining GitHub PR-merge API race: sha guards the head, not the base.
@@ -334,6 +361,9 @@ def reconcile(api, pr, deadline):
         require(merged.get("merged") is True, "GitHub refused the guarded merge")
         pr = api.call(REPO, "/pulls/" + str(pr["number"]))
     sha, tag = pr["merge_commit_sha"], "v" + value["product_version"]
+    merged_commit = api.call(REPO, "/git/commits/" + sha)
+    candidate_commit = api.call(REPO, "/git/commits/" + commit_sha)
+    require([parent["sha"] for parent in merged_commit["parents"]] == [value["base"], commit_sha] and merged_commit["tree"]["sha"] == candidate_commit["tree"]["sha"], "Merged parents/tree differ from the tested candidate")
     existing = api.tag(REPO, tag)
     if existing is None:
         require(api.main() == sha, "Main advanced before release validation; manual resolution required")
@@ -357,7 +387,7 @@ def create_pr(api, value, branch):
     return api.call(REPO, "/pulls", "POST", {"title": title, "head": branch, "base": "main", "body": body})
 
 
-def prepare(api, base, value):
+def prepare(api, writer, base, value):
     before = api.files(base)
     require(all((ROOT / name).read_text() == text for name, text in before.items()), "Checkout is not the expected clean main source")
     old = tomllib.loads(before["Cargo.toml"])["package"]["version"]
@@ -374,11 +404,26 @@ def prepare(api, base, value):
     shared = next(package for package in graph["packages"] if package["name"] == "w-monitor-collectors")
     require(shared["version"] == value["shared_version"] and {dependency["name"] for dependency in shared["dependencies"]} == ALLOWED_DEPS, "Shared dependency boundary changed")
     tree = api.call(REPO, "/git/commits/" + base)["tree"]["sha"]
-    tree = api.call(REPO, "/git/trees", "POST", {"base_tree": tree, "tree": [{"path": name, "mode": "100644", "type": "blob", "content": generated[name]} for name in FILES]})["sha"]
+    tree = writer.call(REPO, "/git/trees", "POST", {"base_tree": tree, "tree": [{"path": name, "mode": "100644", "type": "blob", "content": generated[name]} for name in FILES]})["sha"]
     message = "chore(deps): update shared collectors to " + value["shared_version"] + "\n\n<!-- " + MARKER + json.dumps(value, sort_keys=True, separators=(",", ":")) + " -->"
-    commit = api.call(REPO, "/git/commits", "POST", {"message": message, "tree": tree, "parents": [base], "author": {"name": BOT, "email": BOT_EMAIL}, "committer": {"name": BOT, "email": BOT_EMAIL}})
-    api.call(REPO, "/git/refs", "POST", {"ref": "refs/heads/" + branch_name(value), "sha": commit["sha"]})
-    return create_pr(api, value, branch_name(value))
+    commit = writer.call(REPO, "/git/commits", "POST", {"message": message, "tree": tree, "parents": [base], "author": {"name": writer.bot_login, "email": writer.bot_email}, "committer": {"name": writer.bot_login, "email": writer.bot_email}})
+    writer.call(REPO, "/git/refs", "POST", {"ref": "refs/heads/" + branch_name(value), "sha": commit["sha"]})
+    return create_pr(writer, value, branch_name(value))
+
+
+def superseded_pr(api, managed):
+    acknowledgement = os.environ.get("COLLECTORS_SUPERSEDE_PR", "")
+    if not acknowledgement:
+        return None
+    require(re.fullmatch(r"[1-9][0-9]*:[a-f0-9]{40}", acknowledgement), "Recovery must name one PR number and exact head SHA")
+    number, sha = acknowledgement.split(":")
+    matches = [pr for pr in managed if pr["number"] == int(number)]
+    require(len(matches) == 1, "Acknowledged PR is not an existing managed PR")
+    pr = api.call(REPO, "/pulls/" + number)
+    require(pr["state"] == "closed" and not pr["merged_at"] and pr["head"]["sha"] == sha, "Recovery requires the unchanged, manually closed, unmerged PR")
+    validate_candidate(api, pr, legacy=pr["user"]["login"] == LEGACY_BOT)
+    print("Admin-acknowledged closed PR superseded:", number, sha, flush=True)
+    return int(number)
 
 
 def main():
@@ -387,6 +432,8 @@ def main():
     args = parser.parse_args()
     require(args.dry_run or (os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("GITHUB_REPOSITORY") == REPO and os.environ.get("GITHUB_TOKEN")), "Live reconciliation runs only in this repository's Actions with GITHUB_TOKEN")
     api = GitHub(os.environ.get("GITHUB_TOKEN", ""), args.dry_run)
+    writer = creator_app(api) if os.environ.get("COLLECTORS_APP_TOKEN") else None
+    require(args.dry_run or writer is not None, "Live PR creation requires the dedicated repository App")
     current = shared_package((ROOT / "Cargo.lock").read_text())["version"]
     latest = api.call(SHARED, "/releases/latest")
     require(not latest["draft"] and not latest["prerelease"], "Latest shared release must be stable")
@@ -397,13 +444,16 @@ def main():
         sha = api.tag(SHARED, target)
         require(sha is not None, "Stable shared release has no tag")
         verify_shared(api, {"shared_tag": target, "shared_version": target_version, "shared_sha": sha})
-        print(json.dumps({"current_shared": current, "latest_shared": target_version, "result": "no_update" if version(target_version) <= version(current) else "update_available", "mutations": False}))
+        print(json.dumps({"current_shared": current, "latest_shared": target_version, "result": "no_update" if version(target_version) <= version(current) else "update_available", "mutations": False, "creator_app_verified": writer is not None}))
         return
     deadline = time.monotonic() + 30 * 60
     base = api.main()
     initial_base = base
     pulls = api.pages(REPO, "/pulls?state=all&sort=created&direction=desc")
     managed = [pr for pr in pulls if pr["head"]["ref"].startswith(PREFIX) and pr["head"]["repo"] and pr["head"]["repo"]["full_name"] == REPO]
+    known_heads = {pr["head"]["ref"] for pr in managed}
+    ignored = superseded_pr(api, managed)
+    managed = [pr for pr in managed if pr["number"] != ignored]
     if managed:
         pr = api.call(REPO, "/pulls/" + str(managed[0]["number"]))
         if not reconcile(api, pr, deadline):
@@ -414,14 +464,8 @@ def main():
             return
         current = shared_package(api.files(base)["Cargo.lock"])["version"]
     branches = api.call(REPO, "/git/matching-refs/heads/" + PREFIX)
-    orphan = [ref for ref in branches if ref["ref"].removeprefix("refs/heads/") not in {pr["head"]["ref"] for pr in managed}]
-    require(len(orphan) <= 1, "Multiple unrecognized update branches require manual inspection")
-    if orphan:
-        ref = orphan[0]
-        value = metadata(api.call(REPO, "/git/commits/" + ref["object"]["sha"])["message"])
-        require(value["base"] == base and ref["ref"] == "refs/heads/" + branch_name(value), "Unknown/stale orphan branch; refusing overwrite")
-        reconcile(api, create_pr(api, value, branch_name(value)), deadline)
-        return
+    orphan = [ref for ref in branches if ref["ref"].removeprefix("refs/heads/") not in known_heads]
+    require(not orphan, "Unrecognized update branch requires operator inspection; refusing branch adoption")
     if version(target_version) <= version(current):
         print("No newer stable shared release; no mutations")
         return
@@ -430,7 +474,7 @@ def main():
     product = version(tomllib.loads(api.files(base)["Cargo.toml"])["package"]["version"])
     value = {"base": base, "shared_tag": target, "shared_version": target_version, "shared_sha": sha, "product_version": ".".join(map(str, (*product[:2], product[2] + 1)))}
     verify_shared(api, value)
-    reconcile(api, prepare(api, base, value), deadline)
+    reconcile(api, prepare(api, writer, base, value), deadline)
 
 
 if __name__ == "__main__":

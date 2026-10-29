@@ -326,11 +326,21 @@ for administrators too. Keep force pushes and branch deletion disabled. The
 reconciler checks the protected required-build summary and a clean merge state;
 strict up-to-date protection closes the PR merge API's concurrent-base race.
 
-Only this synchronization workflow has repository-local contents, pull-request
-and Actions write permissions. It uses `GITHUB_TOKEN` for the two fixed public
-repositories; no personal token, Private repository access or provider secret is
-needed. If a shared Actions GET specifically denies integration access, it retries
-that public GET anonymously; a rate-limit response remains an error.
+The synchronization workflow uses a dedicated GitHub App only to create candidate
+commits, branches and pull requests. Install it only on `w-monitor-public`, with
+Contents and Pull requests write permissions plus automatic Metadata read; it needs
+no Actions, Secrets or Workflows permission, OAuth flow or webhook. Store its ID and
+private key in repository secrets `COLLECTORS_APP_ID` and
+`COLLECTORS_APP_PRIVATE_KEY`. Set repository variable `COLLECTORS_APP_BOT_LOGIN` to
+the independently confirmed `<app-slug>[bot]` login. The pinned official token action
+mints a repository-only token; the reconciler verifies that scope, the action's App
+slug and the GitHub bot user ID before deriving its commit identity. PR metadata
+never chooses the trusted author.
+
+The repository's `GITHUB_TOKEN` still handles reads, guarded merges and main/tag CI
+dispatch. No personal token, Private repository access or provider secret is needed.
+If a shared Actions GET specifically denies integration access, it retries that
+public GET anonymously; a rate-limit response remains an error.
 The operator [ops/update_collectors.py](ops/update_collectors.py) requires Python
 3.11+, and the workflow installs the existing pinned Rust 1.96 toolchain.
 
@@ -345,13 +355,17 @@ unchanged. Shared dependency and transitive upgrades within those closures are
 allowed, while the five-direct-dependency boundary remains fixed. An incompatible
 boundary change requires manual review instead.
 
-The reconciler explicitly dispatches the existing CI on the bot branch because
-`GITHUB_TOKEN`-created commits and PRs do not trigger ordinary push/PR workflows.
-It checks the exact SHA, then merges only a clean PR whose tested base remains
-unchanged. It dispatches and verifies CI on the exact merged `main` commit, creates
-an immutable product tag, and dispatches that tag through the existing build,
-release and seven-node deployment jobs. Installed Agents still update only when
-their local operator manually installs a release.
+App-created PRs must pass the natural `pull_request` workflow associated with that
+PR number and exact head SHA. A manually dispatched branch build cannot substitute
+for it or bypass an approval-required PR run. GitHub documents that
+[`GITHUB_TOKEN`-created PRs require workflow approval](https://docs.github.com/en/actions/concepts/security/github_token),
+which is why candidate creation uses the separate App installation token.
+The reconciler merges only a clean PR whose tested base remains unchanged, verifies
+the merge commit's two parents and identical candidate tree, then dispatches CI on
+the exact merged `main` commit. It creates an immutable product tag and dispatches
+that tag through the existing build, release and seven-node deployment jobs.
+Installed Agents still update only when their local operator manually installs a
+release.
 
 Pending work resumes before considering a newer shared release. Existing dispatch
 runs are identified by event, ref and SHA; a pending CI is polled, not repeatedly
@@ -362,14 +376,28 @@ branch, conflicting tag or closed pending bot PR also stops reconciliation; huma
 changes are never force-pushed or automatically rebased. Closing the pending PR
 therefore halts later updates until an operator resolves it.
 
+For an explicitly approved recovery after a source fix advances main, manually
+close the old unmerged bot PR, then set repository variable
+`COLLECTORS_SUPERSEDE_PR` to `<PR-number>:<full-40-character-head-SHA>`. Only that
+unchanged closed PR may be skipped after its trusted creator, single parent,
+metadata, complete diff and shared release evidence are revalidated. The legacy
+`github-actions[bot]` identity is allowed only in this recovery path. An open,
+merged, changed-head or human-authored PR cannot be acknowledged this way. New App
+branches include the tested base SHA suffix, preserving the old PR/ref without
+force-push or deletion. Unknown orphan branches stop for operator inspection;
+they are never adopted. Keep the acknowledgement until a successor PR exists,
+then remove it. Without this exact acknowledgement, closing a pending PR still
+halts updates.
+
 For a read-only current/latest comparison, dispatch with `dry_run=true` or run:
 
 ```sh
 python3 ops/update_collectors.py --dry-run
 ```
 
-This verifies the stable shared tag, manifest and CI, then prints whether an
-update is available without creating a branch, PR, tag, release or deployment. Enabling this automation does not itself bump the current
+With configured App credentials, Actions dry-run also verifies the creator App
+identity and repository scope. This verifies the stable shared tag, manifest and
+CI, then prints whether an update is available without creating a branch, PR, tag, release or deployment. Enabling this automation does not itself bump the current
 product version.
 
 ### Cloudflare frontend CI/CD
