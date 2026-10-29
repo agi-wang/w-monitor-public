@@ -78,7 +78,9 @@ def deploy():
     wsgi = config["wsgi"]
     if not all(isinstance(value, str) and re.fullmatch(r"/[A-Za-z0-9/._-]+", value) for value in (python, wsgi)):
         raise RuntimeError("Invalid hosting Python executable")
-    document_root = Path.home() / "domains" / url.hostname / "public_html"
+    document_root = Path(config.get("document_root", str(Path.home() / "domains" / url.hostname / "public_html")))
+    if not document_root.is_absolute() or not document_root.is_relative_to(Path.home()):
+        raise RuntimeError("Document root must belong to the deployment account")
     if document_root.is_symlink() or document_root.resolve() != document_root or not document_root.is_dir():
         raise RuntimeError("Expected dedicated account document root")
     ROOT.mkdir(mode=0o711, exist_ok=True)
@@ -176,10 +178,10 @@ def deploy():
         periodic = PRIVATE / "run_periodic.py"
         if not periodic.is_file() or periodic.is_symlink():
             raise RuntimeError("Trusted periodic entrypoint missing")
-        # Cron is account infrastructure provisioned through DirectAdmin.
+        # Cron is account infrastructure provisioned through the hosting panel.
         # Its stable wrapper selects active-release.json after every CI deploy.
         if config.get("periodic_enabled") is not True:
-            raise RuntimeError("DirectAdmin periodic worker must be provisioned")
+            raise RuntimeError("Hosting periodic worker must be provisioned")
         subprocess.run([python, str(periodic)], check=True, timeout=60, stdout=subprocess.DEVNULL)
         # Retain active and one preceding immutable release. Application data and
         # configuration are outside this directory and never touched here.

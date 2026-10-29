@@ -91,6 +91,7 @@ jobs:
           /tmp/receiver-check/bin/python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: --retries 2 --timeout 10 -r server/requirements.lock
           /tmp/receiver-check/bin/python -m pip check
           python3 -m compileall -q server ops
+          bash -n ops/build_redis.sh ops
           node --check server/web/app.js
           python3 ops/package_server.py
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -150,6 +151,8 @@ jobs:
             environment: public-production
           - region: sg
             environment: public-singapore
+          - region: uk
+            environment: public-united-kingdom
     environment: ${{ matrix.environment }}
     concurrency:
       group: public-receiver-production-${{ matrix.region }}
@@ -174,6 +177,7 @@ jobs:
           PUBLIC_DEPLOY_USER: ${{ vars.PUBLIC_DEPLOY_USER }}
           PUBLIC_DEPLOY_PRIVATE_DIR: ${{ vars.PUBLIC_DEPLOY_PRIVATE_DIR }}
           PUBLIC_DEPLOY_PYTHON: ${{ vars.PUBLIC_DEPLOY_PYTHON }}
+          PUBLIC_DEPLOY_PANEL_TOKEN: ${{ secrets.PUBLIC_DEPLOY_PANEL_TOKEN }}
           PUBLIC_DEPLOY_PANEL_PASSWORD: ${{ secrets.PUBLIC_DEPLOY_PANEL_PASSWORD }}
           DEPLOY_USER: ${{ vars.PUBLIC_DEPLOY_USER }}
           DEPLOY_KEY: ${{ secrets.PUBLIC_DEPLOY_KEY }}
@@ -186,6 +190,8 @@ jobs:
           [[ "$PUBLIC_ORIGIN" =~ ^https://[A-Za-z0-9.-]+$ ]]
           if [ "$DEPLOY_TRANSPORT" = directadmin ]; then
             test -n "$PUBLIC_DEPLOY_PANEL_PASSWORD"
+          elif [ "$DEPLOY_TRANSPORT" = cpanel ]; then
+            test -n "$PUBLIC_DEPLOY_PANEL_TOKEN"
           else
             test -n "$DEPLOY_KEY" && test -n "$DEPLOY_KNOWN_HOSTS"
           fi
@@ -208,7 +214,7 @@ jobs:
           umask 077
           printf '%s\n' "$DEPLOY_KEY" > "$temporary/identity"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$temporary/known_hosts"
-          if [ "$DEPLOY_TRANSPORT" = directadmin ]; then
+          if [ "$DEPLOY_TRANSPORT" = directadmin ] || [ "$DEPLOY_TRANSPORT" = cpanel ]; then
             python3 ops/panel_deploy.py "$temporary/delivery.zip" "$RELEASE_TAG" "$sha"
           else
             ssh -i "$temporary/identity" -o KexAlgorithms=diffie-hellman-group14-sha256 -c aes128-ctr -o BatchMode=yes -o ConnectTimeout=10 \

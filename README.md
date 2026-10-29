@@ -234,3 +234,27 @@ identity with other vhosts; independent data directories are not OS isolation.
 `offline_grace_ms` is also editable at startup (default 15000). Online status,
 platform counts and notifications share one deadline calculation using each
 device's negotiated reporting cadence, including legacy Agents.
+
+### cPanel with an account-owned Redis
+
+The `public-united-kingdom` GitHub environment uses cPanel UAPI Fileman and
+account Cron with `PUBLIC_DEPLOY_PANEL_TOKEN` stored as an environment secret.
+The reviewed transport uploads the attested immutable delivery to a private
+folder, invokes the same private deployment gate once, checks its exit status,
+and removes its temporary Cron entry. Existing account jobs are preserved.
+Set `document_root` in private `deploy-config.json` to the exact cPanel-owned
+absolute document root; the default remains DirectAdmin's domain directory.
+
+If the provider does not supply Redis, build a pinned static Redis using
+`ops/build_redis.sh /path/to/output` on Linux with a C compiler, libc static
+archives, make and binutils. Install `redis-server` into the private deployment
+folder's `bin/`, and `ops/redis_watchdog.py` beside `run_periodic.py`.
+The private `redis/redis.conf` must set `port 0`, a mode-0600 Unix socket,
+`daemonize yes`, private pid/log/directory paths, `save ""`, `appendonly no`,
+`maxmemory 0`, and `enable-module-command no`. No Redis TCP listener or public
+cache endpoint is used. User/space credentials remain durable in SQLite.
+The existing account Cron wrapper checks Redis before metrics/notifications and
+restarts a failed cache at the next minute tick. While Redis is unavailable,
+ingest returns failure and pages show unknown status; Agent retries and resumes.
+A recovered cache warms as Agents report again. This is not a lossless telemetry
+store. No additional account or tenant resource quotas are imposed.

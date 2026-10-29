@@ -128,11 +128,15 @@ def deploy():
     python = os.environ["PUBLIC_DEPLOY_PYTHON"]
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path:
         raise RuntimeError("Invalid panel origin")
-    if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", user) or not re.fullmatch(r"\.[a-zA-Z0-9._-]{1,63}", private) or not re.fullmatch(r"/[A-Za-z0-9/._-]+", python):
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", user) or not re.fullmatch(r"\.[a-zA-Z][a-zA-Z0-9_-]{0,62}", private) or not re.fullmatch(r"/[A-Za-z0-9/._-]+", python):
         raise RuntimeError("Invalid dedicated deployment paths")
     data = Path(archive).read_bytes()
     if len(data) > 192 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != checksum:
         raise RuntimeError("Deployment inventory checksum mismatch")
+    if os.environ.get("DEPLOY_TRANSPORT") == "cpanel":
+        from cpanel_deploy import deploy as cpanel_deploy
+        cpanel_deploy(origin, user, private, python, data, tag, checksum)
+        return
     authorization = "Basic " + base64.b64encode((user + ":" + os.environ["PUBLIC_DEPLOY_PANEL_PASSWORD"]).encode()).decode()
     filename = "incoming-" + secrets.token_hex(16) + ".zip"
     boundary = "wm-" + secrets.token_hex(16)
