@@ -1665,8 +1665,8 @@ dependencies = [
 
 [[package]]
 name = "w-monitor-collectors"
-version = "0.1.0"
-source = "git+https://github.com/agi-wang/w-monitor-collectors?rev=9c58d091f0aff682d6296cb7862422b6200be3a8#9c58d091f0aff682d6296cb7862422b6200be3a8"
+version = "0.1.1"
+source = "git+https://github.com/agi-wang/w-monitor-collectors?rev=8fbf1708de2e63ac4ff3ac320b93f20fcf486696#8fbf1708de2e63ac4ff3ac320b93f20fcf486696"
 dependencies = [
  "libc",
  "parking_lot",
@@ -1677,7 +1677,7 @@ dependencies = [
 
 [[package]]
 name = "w-monitor-lite"
-version = "1.3.5"
+version = "1.3.6"
 dependencies = [
  "anyhow",
  "base64",

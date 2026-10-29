@@ -1,6 +1,6 @@
 [package]
 name = "w-monitor-lite"
-version = "1.3.5"
+version = "1.3.6"
 edition = "2021"
 license = "MIT"
 description = "Read-only Linux host monitoring agent. No remote control or self-updater."
@@ -12,7 +12,7 @@ members = ["protocol", "vendor/w-hostmetrics"]
 resolver = "2"
 
 [dependencies]
-w-monitor-collectors = { git = "https://github.com/agi-wang/w-monitor-collectors", rev = "9c58d091f0aff682d6296cb7862422b6200be3a8" }
+w-monitor-collectors = { git = "https://github.com/agi-wang/w-monitor-collectors", rev = "8fbf1708de2e63ac4ff3ac320b93f20fcf486696" }
 w-monitor-lite-protocol = { path = "protocol" }
 w-hostmetrics = { path = "vendor/w-hostmetrics" }
 anyhow = "1.0"
