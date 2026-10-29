@@ -1,22 +1,38 @@
 """Deliver a verified archive through cPanel Fileman and account Cron APIs."""
+from http.client import HTTPSConnection
 import json
 import os
 import secrets
 import shlex
+import socket
 import time
 from urllib.parse import urlencode
-from urllib.request import Request, build_opener
+from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
 from panel_deploy import NoRedirect
 
 
 def deploy(origin, user, private, python, data, tag, checksum):
     authorization = "cpanel " + user + ":" + os.environ["PUBLIC_DEPLOY_PANEL_TOKEN"]
+    connect_host = os.environ.get("DEPLOY_HOST", "")
+
+    class PanelHTTPSHandler(HTTPSHandler):
+        def https_open(self, request):
+            def connection(host, **kwargs):
+                client = HTTPSConnection(host, **kwargs)
+                if connect_host:
+                    # Route the TCP socket to the registered server while the
+                    # original hostname still controls TLS verification and SNI.
+                    client._create_connection = lambda address, timeout=None, source_address=None: socket.create_connection((connect_host, address[1]), timeout, source_address)
+                return client
+            return self.do_open(connection, request, context=self._context)
+
+    opener = build_opener(NoRedirect(), ProxyHandler({}), PanelHTTPSHandler())
 
     def request(path, body=None, content_type=None):
         headers = {"Authorization": authorization, "User-Agent": "W-Monitor-Public-Deploy"}
         if content_type:
             headers["Content-Type"] = content_type
-        with build_opener(NoRedirect()).open(Request(origin + path, data=body, headers=headers), timeout=90) as response:
+        with opener.open(Request(origin + path, data=body, headers=headers), timeout=90) as response:
             raw = response.read(1024 * 1024 + 1)
         if len(raw) > 1024 * 1024:
             raise RuntimeError("cPanel response exceeds bound")

@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.3.3**; the release series starts at **v1.0.0**.
+The current release is **v1.3.4**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -255,6 +255,12 @@ restores the previous hosting configuration on failure. Application data and
 configuration remain outside release directories. Server deployment never updates
 installed Agents.
 
+On an account's first deployment, health verification allows 20 seconds for initial
+hosting readiness, then at most three attempts with 15-second requests and
+30-second intervals. Existing receivers retain their shorter verification timing.
+All checks still require the exact version/release, Redis and read-only state;
+private gate logs record HTTP status or exception type without response bodies.
+
 Supported deployment transports:
 
 - Restricted SSH with a dedicated key and pinned host key. Set environment variable
@@ -265,6 +271,10 @@ Supported deployment transports:
 - DirectAdmin's authenticated file and terminal APIs.
 - cPanel's authenticated file and account Cron APIs, using a one-shot deployment
   command and preserving existing account jobs.
+
+cPanel requests connect to the protected environment's `PUBLIC_DEPLOY_HOST` while
+retaining the panel URL hostname for certificate verification and TLS SNI. This
+supports provider panel aliases that resolve to another account server.
 
 Set provider credentials only in protected GitHub environment secrets. The private
 `deploy-config.json` specifies `public_url`, `python`, `wsgi`, `periodic_enabled`,

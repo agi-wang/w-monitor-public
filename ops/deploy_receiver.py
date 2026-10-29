@@ -46,19 +46,26 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def healthy(origin, version):
+def healthy(origin, version, first_deployment=False):
+    if first_deployment:
+        print("Candidate health: waiting 20s for initial hosting readiness", flush=True)
+        time.sleep(20)
     for attempt in range(3):
         try:
             request = Request(origin + "/health", headers={"User-Agent": "W-Monitor-Public-Deploy", "Cache-Control": "no-cache"})
-            with build_opener(NoRedirect()).open(request, timeout=5) as response:
+            with build_opener(NoRedirect()).open(request, timeout=15 if first_deployment else 5) as response:
+                print("Candidate health attempt " + str(attempt + 1) + ": HTTP " + str(response.status), flush=True)
                 raw = response.read(65537)
             value = json.loads(raw) if len(raw) <= 65536 else {}
             if value.get("status") == "ok" and value.get("version") == version and value.get("release_tag") == "v" + version and value.get("mode") == "public" and value.get("host_control_enabled") is False and value.get("cache") == "redis":
                 return True
-        except Exception:
-            pass
+            print("Candidate health: response does not match required release state", flush=True)
+        except Exception as error:
+            status = getattr(error, "code", None)
+            detail = "HTTP " + str(status) if type(status) is int else type(error).__name__
+            print("Candidate health attempt " + str(attempt + 1) + ": " + detail, flush=True)
         if attempt < 2:
-            time.sleep(3)
+            time.sleep(30 if first_deployment else 3)
     return False
 
 
@@ -171,7 +178,7 @@ def deploy():
         previous = htaccess.read_bytes() if htaccess.exists() else b"Require all denied\n"
         settings = f'Options -Indexes\nPassengerAppRoot "{target}/server"\nPassengerBaseURI "/"\nPassengerPython "{wsgi}"\nPassengerAppType wsgi\nPassengerStartupFile passenger_wsgi.py\n'
         atomic(htaccess, settings.encode(), 0o644)
-        if not healthy(origin, tag[1:]):
+        if not healthy(origin, tag[1:], first_deployment=not active_tag):
             atomic(htaccess, previous, 0o644)
             raise RuntimeError("Candidate health failed; prior hosting configuration restored")
         previous_tag = active_tag if active_tag and active_tag != tag else active.get("previous_tag")
