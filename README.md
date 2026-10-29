@@ -153,8 +153,9 @@ static assets from Cloudflare does not move user data or sessions to the CDN.
 Use Python 3.11+, SQLite, trusted HTTPS, Redis, and a hosting environment that can
 run Python WSGI. DirectAdmin and cPanel deployments use the provider's existing web
 server; the application does not open an additional public port.
-The locked dependencies and Passenger WSGI startup have been verified on Python
-3.11 and 3.13 hosting runtimes.
+Locked dependencies and direct WSGI entrypoint imports have been verified on
+Python 3.11 and 3.13. The hosting server must also have a compatible WSGI executor;
+a successful command-line import alone does not verify HTTP serving.
 
 1. Keep release source and private data outside the document root.
 2. Install the exact wheels in `server/requirements.lock` into a `runtime` virtual
@@ -281,6 +282,25 @@ Set provider credentials only in protected GitHub environment secrets. The priva
 and, when needed, the exact account-owned `document_root`. An operator-authorized
 version rebase can set `reset_to_tag` to one exact tag in this private file;
 the gate consumes that permission only after successful activation.
+
+`python` builds the release virtual environment and installs the locked wheels;
+`wsgi` becomes the `PassengerPython` hosting directive. Choose the executor for
+the actual web server:
+
+| Hosting server | `python` | `wsgi` |
+| --- | --- | --- |
+| Apache with Passenger | Installed Python interpreter | Compatible Python interpreter |
+| CloudLinux LiteSpeed with Python 3.11 LSAPI | `/opt/alt/python311/bin/python3` | `/opt/alt/python311/bin/lswsgi` |
+
+LiteSpeed accepts Passenger-style directives but runs its own LSAPI executor.
+Use an installed `lswsgi` matching the release environment's Python major/minor;
+an ordinary CPython executable is not a substitute. Having Python 3.13 installed
+does not establish that a matching Python 3.13 LSAPI executor is available.
+See LiteSpeed's [CloudLinux integration](https://docs.litespeedtech.com/lsws/cp/cpanel/cloudlinux/)
+and [Python LSAPI configuration](https://docs.litespeedtech.com/lsws/extapp/python/).
+Verify the regional HTTP `/health` through the deployment gate before considering
+the receiver active. This concerns receiver hosting only; Agent installation and
+manual-update behavior are unchanged.
 
 ### Cloudflare frontend CI/CD
 
