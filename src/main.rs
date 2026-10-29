@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -62,6 +62,37 @@ fn default_config_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".config/w-monitor-public/agent.json")
+}
+
+fn prepare_config_directory(parent: &Path) -> Result<()> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)?;
+    let directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(parent)
+        .with_context(|| format!("Cannot open config directory {} safely", parent.display()))?;
+    let metadata = directory.metadata()?;
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        bail!(
+            "Config directory {} must belong to the current user",
+            parent.display()
+        );
+    }
+    if metadata.mode() & 0o077 != 0 {
+        if default_config_path().parent() == Some(parent) {
+            directory.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+        } else {
+            bail!(
+                "Config directory {} must have mode 0700; current mode is {:04o}",
+                parent.display(),
+                metadata.mode() & 0o777
+            );
+        }
+    }
+    Ok(())
 }
 
 fn read_config(path: &Path) -> Result<Value> {
@@ -402,17 +433,7 @@ async fn main() -> Result<()> {
         }
     }
     if let Some(origin) = &args.public {
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)?;
-        let metadata = std::fs::symlink_metadata(parent)?;
-        if !metadata.is_dir()
-            || metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.mode() & 0o077 != 0
-        {
-            bail!("Config directory must be owned by the current user with mode 0700");
-        }
+        prepare_config_directory(parent)?;
         // Reserve before making any remote writes; an existing device config
         // must never silently create a second anonymous space.
         let reservation = OpenOptions::new()
@@ -450,17 +471,7 @@ async fn main() -> Result<()> {
         {
             bail!("Endpoint requires HTTPS without credentials, query or fragment");
         }
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)?;
-        let metadata = std::fs::symlink_metadata(parent)?;
-        if !metadata.is_dir()
-            || metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.mode() & 0o077 != 0
-        {
-            bail!("Config directory must be owned by the current user with mode 0700");
-        }
+        prepare_config_directory(parent)?;
         let mut value = match std::fs::symlink_metadata(&args.config) {
             Ok(_) => read_config(&args.config)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),

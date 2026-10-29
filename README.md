@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.0.1**; the release series starts at **v1.0.0**.
+The current release is **v1.0.2**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -55,6 +55,10 @@ You can also supply a registration key explicitly:
   --endpoint https://monitor.20290708.xyz/api/v1/report \
   --key wmb_REPLACE_WITH_YOUR_REGISTRATION_KEY
 ```
+
+During setup, the Agent tightens an existing user-owned default configuration
+directory to mode `0700`. Symlinks and directories owned by another user are
+rejected. Custom configuration directories must already have private permissions.
 
 Configuration defaults to `$HOME/.config/w-monitor-public/agent.json` and can be
 selected with `--config`. The Agent writes owner-only configuration and exchanges
