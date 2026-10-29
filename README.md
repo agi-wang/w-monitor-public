@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.1.0**; the release series starts at **v1.0.0**.
+The current release is **v1.1.1**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -282,3 +282,18 @@ services and security data render as sections/tables. Long lists are searchable
 and paginated; no rows are discarded. The realtime overview stays separate from
 the last-full-snapshot timestamp. Raw JSON is available on demand and as a complete
 local download. Public pages continue to use their deliberately limited projection.
+
+### Device entrypoints and live trends
+
+Select a device name or **View details** in either the public sharing page or
+the private device list. Both show CPU, memory, disk and receive/transmit charts;
+the public dialog uses only the already-published scalar metrics and never fetches
+a private report. The device list also shows a CPU sparkline. Private details
+retain all collector sections and an explicit full-snapshot refresh button.
+
+Charts record samples received while this page is open, retaining at most 15
+minutes / 300 samples per device and 200 devices per browser page. Reloading starts
+a new recording. Duplicate samples are skipped and gaps are not interpolated;
+these charts are not a server-side historical archive. Public link revocation or
+read failure closes its dialog and clears the buffered samples. No additional
+telemetry requests, database writes or Redis retention are introduced.

@@ -3,6 +3,19 @@ import html
 import re
 
 EN = {
+    '刷新完整快照': 'Refresh full snapshot',
+    '仅展示发布者已公开的运行指标，持续接收更新。': 'Live updates of the metrics the publisher has chosen to share.',
+    '设备完整详情': 'Full device details',
+    '公开设备详情': 'Public device details',
+    '展示本页收到的最近 15 分钟采样；刷新页面后重新记录，缺失采样不补值。': 'Samples received on this page over the last 15 minutes. Reloading starts a new recording; missing samples are left as gaps.',
+    '等待更多采样点；收到下一次上报后自动连成曲线。': 'Waiting for more samples. The chart connects as new reports arrive.',
+    '上传': 'Upload',
+    '下载': 'Download',
+    '最近上报': 'Last report',
+    '暂无实时数据': 'No live data',
+    '实时趋势': 'Live trends',
+    '点击设备名称或“查看详情”，查看实时趋势和设备数据。': 'Select a device name or View details to see live trends and device data.',
+    '查看详情': 'View details',
     '系统信息': 'System',
     'CPU 与负载': 'CPU and load',
     '内存与交换': 'Memory and swap',

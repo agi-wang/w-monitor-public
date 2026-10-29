@@ -4,6 +4,7 @@ const t = (message, values = {}) => (window.WM_I18N.messages[message] ?? message
 const $ = (id) => document.getElementById(id);
 const publicSlug = /^\/status\/(wm1_[A-Za-z0-9_-]{40,320})$/.exec(location.pathname)?.[1];
 const responses = new Map();
+const metricHistory = new Map();
 let session, devices = [], pages = [], bootstrap = "", editingPage = null;
 let lastView, currentPage = 0, pollMs = 5000;
 let events, poll, refreshing = false, refreshAgain = false, generation = 0, allowEvents = false;
@@ -117,17 +118,23 @@ function empty(target, title, description) {
 function timeLabel(timestamp) {
   return timestamp ? new Date(timestamp * 1000).toLocaleString(locale, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : t("尚无上报");
 }
-function networkRate(value) { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? new Intl.NumberFormat(locale, { notation: "compact", maximumFractionDigits: 1 }).format(value) + " B/s" : "—"; }
+function networkRate(value) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "—";
+  const units = ["B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s"]; let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+  return new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(value) + " " + units[unit];
+}
 function drawDevices(target, rows, publicView = false) {
   if (!rows.length) { empty(target, publicView ? t("暂无公开设备") : t("等待第一台设备"), publicView ? t("发布者尚未选择设备，或设备已被移除。") : t("点击“接入设备”，在主机上运行 Lite Agent。首次上报后设备会出现在这里。")); return; }
   const table = node("table", undefined, "device-table");
   const head = node("thead"), headRow = node("tr");
-  for (const label of [t("设备 / 最近上报"), t("状态"), "CPU", t("内存"), t("磁盘"), t("网络"), ...(publicView ? [] : [t("只读数据")])]) headRow.append(node("th", label));
+  for (const label of [t("设备 / 最近上报"), t("状态"), "CPU", t("内存"), t("磁盘"), t("网络"), t("设备详情")]) headRow.append(node("th", label));
   head.append(headRow); table.append(head);
   const body = node("tbody");
   for (const device of rows) {
     const row = node("tr"), name = node("td");
-    name.append(node("div", device.name, "device-name"), node("div", timeLabel(device.last_seen), "last-seen"));
+    const openDetails = () => showReport(device, publicView);
+    name.append(button(device.name + " ↗", openDetails, "device-name device-link"), node("div", timeLabel(device.last_seen), "last-seen"));
     const state = node("td", undefined, "status-cell");
     const badge = node("span", undefined, `status${device.online ? "" : " offline"}`);
     badge.append(node("span", undefined, "dot"), document.createTextNode(device.online === true ? t("在线") : device.online === false ? t("离线") : t("暂无数据"))); state.append(badge);
@@ -137,17 +144,21 @@ function drawDevices(target, rows, publicView = false) {
       const value = device[key], valid = typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100;
       const metric = node("span", valid ? `${value.toFixed(1)}%` : "—", `metric${valid && value >= 85 ? " high" : ""}`);
       const bar = node("span", undefined, "bar"), fill = node("i");
-      fill.style.width = `${valid ? value : 0}%`; bar.append(fill); metric.append(bar); cell.append(metric); row.append(cell);
+      fill.style.width = `${valid ? value : 0}%`; bar.append(fill); metric.append(bar); cell.append(metric);
+      if (key === "cpu_percent") cell.append(metricPlot(metricHistory.get(device.viewKey) ?? [], [key], [label], true));
+      row.append(cell);
     }
     const traffic = node("td", undefined, "metric-cell"); traffic.dataset.label = t("网络");
     traffic.textContent = `↓ ${networkRate(device.network_rx_bps)} · ↑ ${networkRate(device.network_tx_bps)}`; row.append(traffic);
+    const cell = node("td", undefined, "actions-cell"), actions = node("div", undefined, "row-actions");
+    actions.append(button(t("查看详情") + " →", openDetails, "details-button"));
     if (!publicView) {
-      const cell = node("td", undefined, "actions-cell"), actions = node("div", undefined, "row-actions");
-      actions.append(button(t("Agent 配置"), () => showAgentSettings(device), ""), button(t("查看采集"), () => showReport(device), ""), button(t("移除接入"), async () => {
+      actions.append(button(t("Agent 配置"), () => showAgentSettings(device), ""), button(t("移除接入"), async () => {
         if (!confirm(t("移除此设备的上报凭据和已存数据？这不会卸载或操作主机上的 Agent。"))) return;
         await api("/api/devices/revoke", { id: device.id }); await refresh();
-      }, "danger")); cell.append(actions); row.append(cell);
+      }, "danger"));
     }
+    cell.append(actions); row.append(cell);
     body.append(row);
   }
   table.append(body); target.replaceChildren(table);
@@ -209,17 +220,26 @@ async function refresh() {
     notice(data.data_available === false ? t("实时数据暂时不可用，已隐藏资源读数。空间与设备接入信息仍已保存。") : "");
     if (data === lastView) return;
     lastView = data;
+    const rows = data.devices.map((device, index) => ({ ...device, viewKey: publicSlug ? JSON.stringify([currentPage, index, device.name]) : device.id }));
+    for (const device of rows) recordMetrics(device);
     if (Number.isInteger(data.refresh_ms) && data.refresh_ms >= 500 && data.refresh_ms <= 60000 && pollMs !== data.refresh_ms) {
       pollMs = data.refresh_ms; startRealtime();
     }
-    if (publicSlug) { $("public-title").textContent = data.title; drawDevices($("public-list"), data.devices, true); }
-    else { devices = data.devices; $("device-count").textContent = data.total; drawDevices($("device-list"), devices); if (reportDevice) updateReportLiveMetrics(devices.find(device => device.id === reportDevice.id)); }
+    if (publicSlug) { $("public-title").textContent = data.title; drawDevices($("public-list"), rows, true); }
+    else { devices = rows; $("device-count").textContent = data.total; drawDevices($("device-list"), devices); }
+    if (reportDevice) {
+      const selected = rows.find(device => device.viewKey === reportDevice.viewKey);
+      if (selected) { reportDevice = selected; updateReportLiveMetrics(selected); }
+      else $("report-dialog").close();
+    }
     drawPaging($(publicSlug ? "public-list" : "device-list"), data);
   } catch (error) {
     if (current !== generation) return;
     notice(error.message); lastView = undefined;
     // Never leave a revoked public snapshot, or a failed private read, visible.
     empty($(publicSlug ? "public-list" : "device-list"), t("暂时无法读取"), t("请刷新页面；链接可能已停用，或当前会话已经失效。"));
+    metricHistory.clear();
+    if (publicSlug && $("report-dialog").open) $("report-dialog").close();
     if (!publicSlug) {
       devices = [];
       if (reportDevice) updateReportLiveMetrics();
@@ -265,6 +285,7 @@ function startRealtime() {
 }
 async function loadSession() {
   generation += 1; stopRealtime(); responses.clear(); lastView = undefined; currentPage = 0;
+  metricHistory.clear(); if ($("report-dialog").open) $("report-dialog").close();
   session = await api("/api/session");
   const fragment = new URLSearchParams(location.hash.slice(1)).get("recovery");
   if (fragment) {
@@ -340,6 +361,44 @@ async function openPage(page = null) {
 const reportTitles = new Map(Object.entries({ system: "系统信息", cpu: "CPU 与负载", memory: "内存与交换", disk: "磁盘与挂载", disk_io: "磁盘 I/O", process: "进程", network: "网络接口", connections: "网络连接", traffic_flows: "流量明细", sensor: "温度与传感器", mount_health: "挂载健康", gpu: "GPU", docker: "容器", security_posture: "安全检查", login_accounts: "登录与账号", diting_audit: "审计摘要", web_hosts: "网站与证书", project_status: "服务与项目", software_inventory: "软件清单", security_advisories: "安全公告", ping: "延迟探测", traceroute: "网络路径", easytier: "EasyTier", cache_scan: "缓存扫描", vps_pressure: "主机负载", transport_runtime: "上报链路", runtime_access: "采集权限" }));
 const reportLabels = new Map(Object.entries({ hostname: "主机名称", os_name: "操作系统", os_version: "系统版本", kernel_version: "内核版本", architecture: "架构", uptime_seconds: "运行时长", uptime_secs: "运行时长", cpu_count: "CPU 核心", total_memory_bytes: "物理内存", usage_percent: "使用率", total_bytes: "总容量", used_bytes: "已用容量", available_bytes: "可用容量", swap_total_bytes: "交换区容量", swap_used_bytes: "已用交换区", swap_usage_percent: "交换区使用率", cores: "核心数", per_core: "每核心指标", core: "核心", brand: "型号", frequency_mhz: "频率", load_avg: "平均负载", one: "1 分钟", five: "5 分钟", fifteen: "15 分钟", disks: "磁盘列表", mount_point: "挂载点", file_system: "文件系统", processes: "进程列表", pid: "PID", name: "名称", cpu_usage: "CPU 使用率", memory_bytes: "内存占用", containers: "容器列表", status: "状态", available: "可用", reason: "原因", count: "数量", interfaces: "接口列表", address: "地址", local_addr: "本地地址", remote_addr: "远端地址", port: "端口", findings: "检查结果", severity: "级别", message: "详情", data: "数据", capabilities: "能力", agent_version: "Agent 版本", report_seq: "上报序号", expected_interval_ms: "上报间隔", timestamp: "采集时间", version: "协议版本", agent_id: "设备标识", os: "系统", arch: "架构", report_interval_ms: "完整上报间隔" }));
 let fullReport, reportDevice;
+function recordMetrics(device) {
+  if (device.online !== true || !Number.isFinite(device.last_seen)) return;
+  const points = metricHistory.get(device.viewKey) ?? [];
+  if (points.at(-1)?.time >= device.last_seen) return;
+  points.push({ time: device.last_seen, ...Object.fromEntries(["cpu_percent", "memory_percent", "disk_percent", "network_rx_bps", "network_tx_bps"].map(key => [key, typeof device[key] === "number" && Number.isFinite(device[key]) && device[key] >= 0 ? device[key] : null])) });
+  while (points.length > 300 || (points[0] && points[0].time < device.last_seen - 900)) points.shift();
+  metricHistory.delete(device.viewKey); metricHistory.set(device.viewKey, points);
+  while (metricHistory.size > 200) metricHistory.delete(metricHistory.keys().next().value);
+}
+function metricPlot(points, keys, labels, small = false) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  const width = small ? 120 : window.innerWidth <= 760 ? Math.max(200, window.innerWidth - 108) : 460, height = small ? 28 : 172, left = small ? 1 : 64, right = width - 8, top = 10, bottom = height - (small ? 2 : 30);
+  const element = (name, attributes, text) => { const item = document.createElementNS(svg.namespaceURI, name); for (const [key, value] of Object.entries(attributes)) item.setAttribute(key, String(value)); if (text !== undefined) item.textContent = text; svg.append(item); return item; };
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`); svg.setAttribute("class", small ? "metric-spark" : "metric-plot"); svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", labels.join(" / ") + " · " + t("实时趋势")); element("title", {}, labels.join(" / ") + " · " + t("实时趋势"));
+  const end = points.at(-1)?.time ?? Date.now() / 1000, start = end - Math.max(60, end - (points[0]?.time ?? end));
+  let maximum = keys[0].endsWith("percent") ? 100 : 1;
+  if (!keys[0].endsWith("percent")) for (const point of points) for (const key of keys) if (point[key] !== null) maximum = Math.max(maximum, point[key] * 1.15);
+  const x = time => left + (time - start) / (end - start) * (right - left), y = value => bottom - Math.min(maximum, value) / maximum * (bottom - top);
+  if (!small) {
+    for (const fraction of [0, 0.5, 1]) {
+      const level = y(maximum * fraction); element("line", { x1: left, x2: right, y1: level, y2: level, class: "chart-grid" });
+      element("text", { x: left - 8, y: level + 3, "text-anchor": "end", class: "chart-axis" }, keys[0].endsWith("percent") ? `${maximum * fraction}%` : networkRate(maximum * fraction));
+    }
+    const clock = time => new Date(time * 1000).toLocaleTimeString(locale, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    element("text", { x: left, y: height - 6, class: "chart-axis" }, clock(start)); element("text", { x: right, y: height - 6, "text-anchor": "end", class: "chart-axis" }, clock(end));
+  }
+  keys.forEach((key, index) => {
+    let path = "", previous;
+    for (const point of points) {
+      const value = point[key]; if (value === null) { previous = undefined; continue; }
+      path += `${previous && point.time - previous.time <= 15 ? "L" : "M"}${x(point.time).toFixed(1)},${y(value).toFixed(1)} `; previous = point;
+    }
+    element("path", { d: path, fill: "none", class: `chart-line chart-series-${index}`, "stroke-width": small ? 1.5 : 2, "vector-effect": "non-scaling-stroke" });
+    const latest = points.at(-1); if (latest?.[key] !== null && latest?.[key] !== undefined) element("circle", { cx: x(latest.time), cy: y(latest[key]), r: small ? 1.5 : 3, class: `chart-point chart-series-${index}` });
+  });
+  return svg;
+}
 function reportLabel(key) { return t(reportLabels.get(key) ?? reportTitles.get(key) ?? key.replaceAll("_", " ")); }
 function reportScalar(value, key = "") {
   if (value === null || value === undefined) return t("未提供");
@@ -361,6 +420,14 @@ function updateReportLiveMetrics(device) {
     const item = node("div"), value = device?.[key]; item.append(node("span", label), node("strong", online && typeof value === "number" ? `${value.toFixed(1)}%` : "—")); box.append(item);
   }
   const network = node("div"); network.append(node("span", t("网络")), node("strong", online ? `↓ ${networkRate(device.network_rx_bps)} · ↑ ${networkRate(device.network_tx_bps)}` : "—")); box.append(network);
+  $("report-live-status").textContent = `${t(online ? "在线" : "暂无实时数据")} · ${t("最近上报")} ${timeLabel(device?.last_seen)}`;
+  const points = metricHistory.get(reportDevice?.viewKey) ?? [], charts = $("report-charts"); charts.replaceChildren();
+  for (const [title, keys, labels] of [["CPU", ["cpu_percent"], ["CPU"]], [t("内存"), ["memory_percent"], [t("内存")]], [t("磁盘"), ["disk_percent"], [t("磁盘")]], [t("网络"), ["network_rx_bps", "network_tx_bps"], [t("下载"), t("上传")]]]) {
+    const card = node("section", undefined, "metric-chart"), heading = node("div", undefined, "chart-heading"); heading.append(node("h3", title));
+    if (keys.length > 1) { const legend = node("span", undefined, "chart-legend"); labels.forEach((label, index) => legend.append(node("span", label, `chart-series-${index}`))); heading.append(legend); }
+    card.append(heading, metricPlot(points, keys, labels)); charts.append(card);
+  }
+  $("report-trend-note").textContent = t(points.length < 2 ? "等待更多采样点；收到下一次上报后自动连成曲线。" : "展示本页收到的最近 15 分钟采样；刷新页面后重新记录，缺失采样不补值。");
 }
 function reportBranch(value, title) {
   const details = node("details", undefined, "report-branch"), count = Array.isArray(value) ? value.length : Object.keys(value).length;
@@ -419,18 +486,22 @@ function drawFullReport() {
   if (!shown) empty(target, t("暂无匹配采集项"), t("可尝试采集名称或字段名。"));
 }
 
-async function showReport(device) {
+async function showReport(device, publicView = false) {
   reportDevice = device; fullReport = undefined; updateReportLiveMetrics(device);
   $("report-title").textContent = device.name;
   $("report-summary").textContent = t("正在读取完整快照…");
   $("report-sections").replaceChildren(); $("report-search").value = "";
   $("report-download").disabled = true; $("report-raw").open = false;
-  $("report-dialog").showModal();
+  $("report-private").hidden = publicView;
+  $("report-visibility").textContent = t(publicView ? "公开设备详情" : "设备完整详情");
+  if (!$("report-dialog").open) $("report-dialog").showModal();
+  if (publicView) { $("report-summary").textContent = t("仅展示发布者已公开的运行指标，持续接收更新。"); return; }
+  const requestGeneration = generation;
   try {
     const data = await api(`/api/devices/${device.id}`);
-    if (reportDevice !== device) return;
+    if (generation !== requestGeneration || reportDevice?.viewKey !== device.viewKey) return;
     fullReport = data.report; $("report-download").disabled = false; drawFullReport();
-  } catch (error) { if (reportDevice === device) $("report-summary").textContent = error.message; }
+  } catch (error) { if (reportDevice?.viewKey === device.viewKey) $("report-summary").textContent = error.message; }
 }
 async function readAgentSettings(initial = false) {
   const selected = settingsDevice;
@@ -459,6 +530,8 @@ async function showAgentSettings(device) {
 }
 for (const element of document.querySelectorAll("[data-close]")) element.addEventListener("click", () => $(element.dataset.close).close());
 $("report-dialog").addEventListener("close", () => { reportDevice = undefined; fullReport = undefined; $("report-content").textContent = ""; $("report-sections").replaceChildren(); });
+window.addEventListener("resize", () => { if (reportDevice) updateReportLiveMetrics(reportDevice); });
+$("report-refresh").onclick = () => { if (reportDevice && !publicSlug) void showReport(reportDevice); };
 $("report-search").oninput = () => { if (fullReport) drawFullReport(); };
 $("report-raw").addEventListener("toggle", () => { if ($("report-raw").open && fullReport) $("report-content").textContent = JSON.stringify(fullReport, null, 2); });
 $("report-download").onclick = () => { if (!fullReport) return; const url = URL.createObjectURL(new Blob([JSON.stringify(fullReport, null, 2)], { type: "application/json" })), link = node("a"); link.href = url; link.download = "w-monitor-" + String(reportDevice.id) + ".json"; link.hidden = true; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
