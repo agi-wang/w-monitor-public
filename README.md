@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.0.2**; the release series starts at **v1.0.0**.
+The current release is **v1.0.3**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -35,6 +35,20 @@ Requirements: Linux AMD64 or ARM64, Bash, curl, and standard GNU utilities inclu
 flag `--verify-provenance` uses GitHub CLI to verify the release attestation.
 
 Keep the recovery key private. It restores the same space across browsers.
+
+The setup dialog offers **Realtime resource metrics** and **Compress reports**,
+both enabled by default. Unchecking them adds `--no-realtime` and
+`--no-compression` as initial preferences. Full read-only collection is unchanged.
+For a connected device, use **Agent settings** in its private device row to change
+these two booleans online. Only the space owner can save them; the Agent receives
+changes on its next report, persists them locally, and confirms application.
+Offline devices wait until they reconnect. Existing Agents require a manual
+update to v1.0.3 or later before they can accept settings.
+
+Online settings take precedence over installation defaults. They cannot change
+endpoints, credentials, commands, executable paths or updates. The UI shows
+pending versus applied state. Re-running `--public` for the same receiver reuses
+the device and space; a different receiver needs a separate `--config` path.
 
 ### Interactive setup and existing devices
 

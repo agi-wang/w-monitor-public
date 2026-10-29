@@ -1,4 +1,4 @@
-# Public monitoring contract v1.0.2
+# Public monitoring contract v1.0.3
 
 [OpenAPI](server/openapi.json) describes browser, ingestion and public-status APIs.
 This receiver implements the existing v1.0 full report envelope; it has no Private
@@ -150,3 +150,30 @@ interval. Supporting Agents advertise `metadata.capabilities["telemetry.metrics"
 and fast samples use the configured metrics interval; legacy devices retain their
 full-report deadline. Runtime `offline_grace_ms` (default 15000) prevents short
 collection/network gaps from producing false outage transitions.
+
+Local setup flags `--no-realtime` and `--no-compression` persist initial client
+preferences. With realtime disabled, `telemetry.metrics` is false and the Agent
+ignores lightweight cadence hints while retaining full reports.
+
+### Allowlisted online settings
+
+Owner-authenticated GET/POST `/api/devices/{id}/settings` manages exactly two
+boolean fields: `realtime_metrics` and `compress_reports`. POST requires the
+selected-space management operation token, Origin and CSRF token; unknown fields
+or non-boolean values are rejected. A device-settings table stores desired values
+with an ON DELETE CASCADE device foreign key. Telemetry reads the indexed
+settings row along with device authentication; it does not write SQLite.
+
+A report reply may include `agent_config` with `version: 1`, a 16-character lower
+hex `revision`, and `settings` containing exactly the two booleans. The Agent
+independently validates all these conditions before atomically changing only
+those local preferences. Malformed or unsupported envelopes are ignored.
+Commands, endpoints, credentials, paths and updates remain excluded.
+
+New Agents advertise `telemetry.settings: 1`, `telemetry.metrics`,
+`telemetry.compression`, and `telemetry.config_revision` in metadata capabilities.
+They immediately send a full report after applying a changed revision. Pending
+state clears only after both that revision and the exact settings are reported.
+Offline devices retain pending preferences. Installation flags are initial
+preferences; saved online preferences take precedence. Legacy Agents continue
+reporting but require a manual update to support online configuration.

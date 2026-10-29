@@ -7,6 +7,7 @@ const responses = new Map();
 let session, devices = [], pages = [], bootstrap = "", editingPage = null;
 let lastView, currentPage = 0, pollMs = 5000;
 let events, poll, refreshing = false, refreshAgain = false, generation = 0, allowEvents = false;
+let settingsDevice, settingsPoll, settingsSaving = false, settingsSupported = false;
 
 function notice(message = "") { $("notice").textContent = message; $("notice").hidden = !message; }
 function node(tag, text, className) {
@@ -74,7 +75,7 @@ function drawDevices(target, rows, publicView = false) {
     traffic.textContent = `↓ ${rate(device.network_rx_bps)} · ↑ ${rate(device.network_tx_bps)}`; row.append(traffic);
     if (!publicView) {
       const cell = node("td", undefined, "actions-cell"), actions = node("div", undefined, "row-actions");
-      actions.append(button(t("查看采集"), () => showReport(device), ""), button(t("移除接入"), async () => {
+      actions.append(button(t("Agent 配置"), () => showAgentSettings(device), ""), button(t("查看采集"), () => showReport(device), ""), button(t("移除接入"), async () => {
         if (!confirm(t("移除此设备的上报凭据和已存数据？这不会卸载或操作主机上的 Agent。"))) return;
         await api("/api/devices/revoke", { id: device.id }); await refresh();
       }, "danger")); cell.append(actions); row.append(cell);
@@ -216,9 +217,19 @@ function showRecovery(key, rotated = false) {
   $("recovery-dialog").showModal();
 }
 function shellQuote(value) { return "'" + value.replaceAll("'", "'\"'\"'") + "'"; }
+function agentOptions(prefix) {
+  return (!$(`${prefix}-realtime`).checked ? " --no-realtime" : "") + (!$(`${prefix}-compression`).checked ? " --no-compression" : "");
+}
 function installCommand() {
-  if (!bootstrap) return t("点击“生成新的接入凭据”，再复制安装命令。已注册设备不受凭据轮换影响。");
-  return `curl -fsSL --proto '=https' --max-time 30 'https://github.com/agi-wang/w-monitor-public/releases/latest/download/install.sh' | bash -s -- --endpoint ${shellQuote(session.ingest_url)} --key ${shellQuote(bootstrap)}`;
+  if (!bootstrap) return "";
+  return `curl -fsSL --proto '=https' --max-time 30 'https://github.com/agi-wang/w-monitor-public/releases/latest/download/install.sh' | bash -s -- --endpoint ${shellQuote(session.ingest_url)} --key ${shellQuote(bootstrap)}${agentOptions("install")}`;
+}
+function updateInstallCommand() {
+  $("install-command").value = installCommand();
+  $("copy-install").textContent = t(bootstrap ? "复制命令" : "生成并复制命令");
+}
+function updateQuickCommand() {
+  $("quick-command").value = `curl -fsSL --proto '=https' --max-time 30 'https://github.com/agi-wang/w-monitor-public/releases/latest/download/install.sh' | bash -s -- --public ${shellQuote(location.origin)} --language ${shellQuote(locale)}${agentOptions("quick")}`;
 }
 async function copy(value) {
   try { await navigator.clipboard.writeText(value); notice(t("已复制。")); }
@@ -242,10 +253,46 @@ async function showReport(device) {
   $("report-content").textContent = raw.length > 512000 ? raw.slice(0, 512000) + t("\n…预览已截断，可通过当前设备数据接口读取完整快照。") : raw;
   $("report-dialog").showModal();
 }
+async function readAgentSettings(initial = false) {
+  const selected = settingsDevice;
+  if (!selected) return;
+  const data = await api(`/api/devices/${selected.id}/settings`);
+  if (selected !== settingsDevice) return;
+  if (initial) {
+    $("device-realtime").checked = data.settings.realtime_metrics;
+    $("device-compression").checked = data.settings.compress_reports;
+  }
+  settingsSupported = data.supported;
+  $("device-settings-save").disabled = !settingsSupported || settingsSaving;
+  $("device-settings-status").textContent = t(!data.supported ? "请先在设备上手动更新 Agent" : data.pending ? "已保存，等待 Agent 接收并确认。" : "配置已应用。下次连接会继续使用这些设置。");
+}
+async function showAgentSettings(device) {
+  settingsDevice = device;
+  settingsSupported = false;
+  $("device-settings-name").textContent = device.name;
+  $("device-settings-status").textContent = t("正在读取配置…");
+  $("device-settings-save").disabled = true;
+  $("device-settings-dialog").showModal();
+  try { await readAgentSettings(true); } catch (error) { $("device-settings-status").textContent = error.message; return; }
+  if (settingsDevice !== device) return;
+  clearInterval(settingsPoll);
+  settingsPoll = setInterval(() => void readAgentSettings().catch(error => { $("device-settings-status").textContent = error.message; }), 3000);
+}
 for (const element of document.querySelectorAll("[data-close]")) element.addEventListener("click", () => $(element.dataset.close).close());
 $("report-dialog").addEventListener("close", () => { $("report-content").textContent = ""; });
 $("restore-dialog").addEventListener("close", () => { $("restore-key").value = ""; });
 $("install-dialog").addEventListener("close", () => { $("install-command").value = ""; });
+$("device-settings-dialog").addEventListener("close", () => { clearInterval(settingsPoll); settingsDevice = undefined; });
+$("device-settings-form").onsubmit = (event) => { event.preventDefault(); void run(async () => {
+  if (!settingsDevice || settingsSaving || !settingsSupported) return;
+  settingsSaving = true;
+  $("device-settings-save").disabled = true;
+  try {
+    await api(`/api/devices/${settingsDevice.id}/settings`, { settings: { realtime_metrics: $("device-realtime").checked, compress_reports: $("device-compression").checked } });
+    await readAgentSettings();
+  } catch (error) { $("device-settings-status").textContent = error.message; throw error; }
+  finally { settingsSaving = false; if (settingsDevice) $("device-settings-save").disabled = !settingsSupported; }
+}); };
 $("recovery-dialog").addEventListener("cancel", (event) => event.preventDefault());
 $("saved-recovery").onclick = () => { $("recovery-dialog").close(); $("recovery-key").value = ""; };
 $("copy-recovery").onclick = () => run(() => copy($("recovery-key").value));
@@ -260,17 +307,26 @@ $("rotate-recovery").onclick = () => run(async () => {
   const data = await api("/api/recovery/rotate", {}); bootstrap = data.bootstrap_key; showRecovery(data.recovery, true);
 });
 $("space-select").onchange = () => run(async () => { await api("/api/spaces/select", { id: $("space-select").value }); bootstrap = ""; await loadSession(); });
-$("add-device").onclick = () => { $("install-command").value = installCommand(); $("copy-install").disabled = !bootstrap; $("install-dialog").showModal(); };
+$("add-device").onclick = () => { updateInstallCommand(); $("install-dialog").showModal(); };
 $("generate-bootstrap").onclick = () => run(async () => {
   if (bootstrap && !confirm(t("生成新凭据后，旧接入命令将不能注册新设备。已注册设备不受影响。"))) return;
-  bootstrap = (await api("/api/bootstrap/rotate", {})).bootstrap_key; $("install-command").value = installCommand(); $("copy-install").disabled = false;
+  bootstrap = (await api("/api/bootstrap/rotate", {})).bootstrap_key; updateInstallCommand();
 });
 $("quick-deploy").onclick = () => {
-  $("quick-command").value = `curl -fsSL --proto '=https' --max-time 30 'https://github.com/agi-wang/w-monitor-public/releases/latest/download/install.sh' | bash -s -- --public ${shellQuote(location.origin)} --language ${shellQuote(locale)}`;
+  updateQuickCommand();
   $("quick-dialog").showModal();
 };
 $("copy-quick").onclick = () => run(() => copy($("quick-command").value));
-$("copy-install").onclick = () => run(() => copy($("install-command").value));
+$("copy-install").onclick = () => run(async () => {
+  const button = $("copy-install"); button.disabled = true;
+  try {
+    if (!bootstrap) bootstrap = (await api("/api/bootstrap/rotate", {})).bootstrap_key;
+    updateInstallCommand(); await copy($("install-command").value);
+  } finally { button.disabled = false; }
+});
+for (const prefix of ["install", "quick"]) for (const option of ["realtime", "compression"]) {
+  $(`${prefix}-${option}`).onchange = prefix === "install" ? updateInstallCommand : updateQuickCommand;
+}
 $("new-page").onclick = () => run(() => openPage());
 $("bind-email").onclick = () => run(async () => { await api("/api/email/bind", { enabled: true }); await refreshEmail(); notice(t("已绑定验证过的邮箱，并开启通知。")); });
 $("save-email").onclick = () => run(async () => { await api("/api/email/settings", { enabled: $("email-enabled").checked }); await refreshEmail(); notice(t("通知设置已保存。")); });

@@ -25,7 +25,7 @@ from redis_cache import RedisCache
 from encryption import SealedData
 from i18n import EN, language, render_html, translate
 
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 SOURCE_RELEASE = Path(__file__).resolve().parents[1].name
 MAX_BODY = 8 * 1024 * 1024
 WEB = Path(__file__).resolve().parent / "web"
@@ -135,6 +135,9 @@ with database() as _db:
       agent_id TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
       created_at INTEGER NOT NULL, UNIQUE(space_id,agent_id));
     CREATE INDEX IF NOT EXISTS device_space_name ON devices(space_id,name,id);
+    CREATE TABLE IF NOT EXISTS device_settings(
+      device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+      settings TEXT NOT NULL);
     DROP INDEX IF EXISTS device_space;
     CREATE TABLE IF NOT EXISTS pages(
       id TEXT PRIMARY KEY, space_id TEXT NOT NULL REFERENCES spaces(id),
@@ -324,6 +327,22 @@ def projection(row, meta=None, public=False, available=True):
     return result
 
 
+def config_envelope(settings):
+    return {"version": 1, "revision": digest(json.dumps(settings, sort_keys=True, separators=(",", ":")))[:16], "settings": settings}
+
+
+def device_settings(db, space_id, device_id):
+    row = db.execute("SELECT d.id,d.name,s.settings FROM devices d LEFT JOIN device_settings s ON s.device_id=d.id WHERE d.id=? AND d.space_id=?", (device_id, space_id)).fetchone()
+    if not row:
+        raise Rejected(404, "设备不存在")
+    metadata, available = live_metadata([row])
+    if not available:
+        raise Rejected(503, "实时服务暂不可用，请稍后再试")
+    applied = metadata.get(device_id, {}).get("agent_settings")
+    desired = config_envelope(json.loads(row["settings"])) if row["settings"] else None
+    return {"id": row["id"], "name": row["name"], "supported": applied is not None, "settings": desired["settings"] if desired else applied["settings"] if applied else {"realtime_metrics": True, "compress_reports": True}, "pending": bool(desired and (not applied or applied.get("revision") != desired["revision"] or applied.get("settings") != desired["settings"])), "revision": desired["revision"] if desired else None}
+
+
 def page_number(environ):
     raw = parse_qs(environ.get("QUERY_STRING", "")).get("page", ["0"])[0]
     if not re.fullmatch(r"[0-9]{1,10}", raw):
@@ -380,7 +399,7 @@ def receive(db, environ):
     credential = digest(token)
     # Prefixes choose the index, never grant access. Exact hashed credentials
     # remain authoritative; reject before decompressing untrusted reports.
-    machine = db.execute("SELECT id,space_id,agent_id,token_hash FROM devices WHERE token_hash=?", (credential,)).fetchone() if token.startswith("sat_") else None
+    machine = db.execute("SELECT d.id,d.space_id,d.agent_id,d.token_hash,s.settings FROM devices d LEFT JOIN device_settings s ON s.device_id=d.id WHERE d.token_hash=?", (credential,)).fetchone() if token.startswith("sat_") else None
     space = db.execute("SELECT id,auto_page FROM spaces WHERE bootstrap_hash=?", (credential,)).fetchone() if token.startswith("wmb_") else None
     if machine is None and space is None:
         limited("invalid-report:" + environ.get("REMOTE_ADDR", ""), 3000, 60)
@@ -436,6 +455,9 @@ def receive(db, environ):
     supports_metrics = metrics or (isinstance(capabilities, dict) and capabilities.get("telemetry.metrics") is True)
     network = scalar(collectors, "network")
     metadata = {"name": name, "received_at": int(time.time()), "expected_interval_ms": METRICS_INTERVAL if supports_metrics else interval, "cpu": percent(cpu.get("usage_percent", cpu.get("usage"))), "memory": percent(memory.get("usage_percent")), "disk": percent(disk.get("usage_percent")), "network_rx_bps": network_rate(network.get("total_received_bytes_per_sec")), "network_tx_bps": network_rate(network.get("total_transmitted_bytes_per_sec"))}
+    if isinstance(capabilities, dict) and type(capabilities.get("telemetry.settings")) is int and capabilities["telemetry.settings"] == 1 and all(type(capabilities.get(key)) is bool for key in ("telemetry.metrics", "telemetry.compression")):
+        revision = capabilities.get("telemetry.config_revision")
+        metadata["agent_settings"] = {"revision": revision if isinstance(revision, str) and re.fullmatch(r"[a-f0-9]{16}", revision) else None, "settings": {"realtime_metrics": capabilities["telemetry.metrics"], "compress_reports": capabilities["telemetry.compression"]}}
     stored = CACHE.store_metrics(DYNAMIC, device_id, space_id, BOX.seal("metrics:" + device_id, metadata), secrets.token_hex(16)) if metrics else CACHE.store_report(DYNAMIC, device_id, space_id, BOX.seal_report("report:" + device_id, report), BOX.seal("metrics:" + device_id, metadata), secrets.token_hex(16))
     if stored != 1:
         raise Rejected(503, "实时数据存储暂不可用；本次上报未确认")
@@ -448,6 +470,9 @@ def receive(db, environ):
         raise
     if machine_token:
         reply["agent_token"] = machine_token
+    desired = machine["settings"] if machine else db.execute("SELECT settings FROM device_settings WHERE device_id=?", (device_id,)).fetchone()
+    if desired:
+        reply["agent_config"] = config_envelope(json.loads(desired if machine else desired[0]))
     return reply
 
 
@@ -601,6 +626,10 @@ def route(db, environ):
         except ValueError:
             raise Rejected(503, "实时快照校验失败，请等待设备重新上报") from None
         return 200, {"report": report, "read_only": True}, headers
+    if method == "GET" and re.fullmatch(r"/api/devices/[a-f0-9]{32}/settings", path):
+        space = current_space(db, session)
+        operation_guard(environ, space)
+        return 200, device_settings(db, space["id"], path.split("/")[3]), headers
     if method == "GET" and path == "/api/email":
         space = current_space(db, session)
         operation_guard(environ, space)
@@ -667,6 +696,18 @@ def route(db, environ):
         return 200, {"ok": True}, headers
     space = current_space(db, session)
     operation_guard(environ, space)
+    if re.fullmatch(r"/api/devices/[a-f0-9]{32}/settings", path):
+        settings = value.get("settings")
+        if set(value) != {"settings"} or not isinstance(settings, dict) or set(settings) != {"realtime_metrics", "compress_reports"} or not all(type(item) is bool for item in settings.values()):
+            raise Rejected(400, "仅允许修改实时指标与压缩上报开关")
+        device_id = path.split("/")[3]
+        begin_browser_write(db, session, space["id"])
+        current = device_settings(db, space["id"], device_id)
+        if not current["supported"]:
+            raise Rejected(409, "请先在设备上手动更新 Agent")
+        db.execute("INSERT INTO device_settings(device_id,settings) VALUES(?,?) ON CONFLICT(device_id) DO UPDATE SET settings=excluded.settings", (device_id, json.dumps(settings, sort_keys=True, separators=(",", ":"))))
+        db.commit()
+        return 200, device_settings(db, space["id"], device_id), headers
     if path == "/api/email/bind":
         active = begin_browser_write(db, session, space["id"])
         if not active["subject"] or not active["verified_email"]:

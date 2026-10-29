@@ -13,6 +13,7 @@ while [ "$#" -gt 0 ]; do
     --key|--endpoint|--config) [ "$#" -ge 2 ] || exit 2; agent_args+=("$1" "$2");
       shift 2 ;;
     --verify-provenance) verify_provenance=true; shift ;;
+    --no-realtime|--no-compression) agent_args+=("$1"); shift ;;
     --public) [ "$#" -ge 2 ] || exit 2; public_origin="$2"; shift 2 ;;
     --language) [ "$#" -ge 2 ] || exit 2; language="$2"; shift 2 ;;
     v*) [ -z "$version" ] || exit 2; version="$1"; shift ;;

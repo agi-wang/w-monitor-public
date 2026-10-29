@@ -52,6 +52,12 @@ struct Args {
     public: Option<String>,
     #[arg(long, default_value = "en", value_parser = ["en", "zh-CN"])]
     language: String,
+    /// Disable lightweight realtime samples; retain the full report cadence.
+    #[arg(long)]
+    no_realtime: bool,
+    /// Send reports without gzip compression.
+    #[arg(long)]
+    no_compression: bool,
     /// Explicitly permit loopback HTTP for local development only.
     #[arg(long)]
     allow_local_http: bool,
@@ -434,22 +440,45 @@ async fn main() -> Result<()> {
     }
     if let Some(origin) = &args.public {
         prepare_config_directory(parent)?;
-        // Reserve before making any remote writes; an existing device config
-        // must never silently create a second anonymous space.
-        let reservation = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&args.config)?;
-        let setup = public_setup(origin, &args.language).await;
-        drop(reservation);
-        match setup {
-            Ok(value) => write_config(&args.config, &value)?,
-            Err(_) => {
-                std::fs::remove_file(&args.config)?;
-                bail!("Anonymous setup failed. Keep any recovery key printed above; setup was not retried.");
+        let mut value = match std::fs::symlink_metadata(&args.config) {
+            Ok(_) => {
+                let value = read_config(&args.config)?;
+                if value["endpoint_url"].as_str()
+                    != Some(format!("{}/api/v1/report", origin.trim_end_matches('/')).as_str())
+                {
+                    bail!(
+                        "Existing device belongs to another receiver; use a separate --config path"
+                    );
+                }
+                value
             }
-        }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // Reserve before any remote write. Another setup must never
+                // silently create a second anonymous space for this config.
+                let reservation = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&args.config)?;
+                let setup = public_setup(origin, &args.language).await;
+                drop(reservation);
+                match setup {
+                    Ok(value) => value,
+                    Err(_) => {
+                        std::fs::remove_file(&args.config)?;
+                        bail!("Anonymous setup failed. Keep any recovery key printed above; setup was not retried.");
+                    }
+                }
+            }
+            Err(error) => return Err(error.into()),
+        };
+        value["realtime_metrics"] = json!(!args.no_realtime);
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("remote_config_revision");
+        value["compress_reports"] = json!(!args.no_compression);
+        write_config(&args.config, &value)?;
     }
     if let Some(key) = &args.key {
         if key.is_empty() || key.len() > 512 || key.chars().any(char::is_control) {
@@ -479,7 +508,12 @@ async fn main() -> Result<()> {
         };
         value["endpoint_url"] = json!(args.endpoint);
         value["auth_token"] = json!(key);
-        value["compress_reports"] = json!(true);
+        value["compress_reports"] = json!(!args.no_compression);
+        value["realtime_metrics"] = json!(!args.no_realtime);
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("remote_config_revision");
         write_config(&args.config, &value)?;
         // Remove the registration key from the long-running process arguments.
         use std::os::unix::process::CommandExt;
@@ -538,7 +572,11 @@ async fn main() -> Result<()> {
         .clamp(5_000, 1_800_000);
     // Enabled by Public configurations; existing receiver configurations retain
     // their transport until a local operator explicitly enables compression.
-    let compress_reports = config["compress_reports"].as_bool().unwrap_or(false);
+    let mut compress_reports =
+        config["compress_reports"].as_bool().unwrap_or(false) && !args.no_compression;
+    let mut realtime_metrics =
+        config["realtime_metrics"].as_bool().unwrap_or(true) && !args.no_realtime;
+    let mut applied_revision = config["remote_config_revision"].as_str().map(str::to_owned);
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
@@ -702,7 +740,10 @@ async fn main() -> Result<()> {
         report.metadata.agent_version = env!("CARGO_PKG_VERSION").to_owned();
         report.apply_runtime_access(true);
         report.metadata.capabilities["agent.lite"] = json!(true);
-        report.metadata.capabilities["telemetry.metrics"] = json!(true);
+        report.metadata.capabilities["telemetry.metrics"] = json!(realtime_metrics);
+        report.metadata.capabilities["telemetry.compression"] = json!(compress_reports);
+        report.metadata.capabilities["telemetry.settings"] = json!(1);
+        report.metadata.capabilities["telemetry.config_revision"] = json!(applied_revision);
         report.metadata.capabilities["security.inventory"] = json!("osv-v1");
         report.metadata.capabilities["security.advisories"] = json!("dpkg-v1");
         let bytes = if full {
@@ -743,6 +784,7 @@ async fn main() -> Result<()> {
                 tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
             }
         }
+        let mut config_changed = false;
         if let Some(value) = response {
             if value["status"] == "ok" {
                 if let Some(next) = value["agent_token"].as_str().filter(|v| {
@@ -759,8 +801,44 @@ async fn main() -> Result<()> {
                 if let Some(ms) = value["report_interval_ms"].as_u64() {
                     interval_ms = ms.clamp(5_000, 1_800_000);
                 }
+                let configuration = &value["agent_config"];
+                if configuration["version"].as_u64() == Some(1)
+                    && configuration["settings"]
+                        .as_object()
+                        .is_some_and(|settings| settings.len() == 2)
+                {
+                    if let (Some(revision), Some(realtime), Some(compression)) = (
+                        configuration["revision"].as_str().filter(|revision| {
+                            revision.len() == 16
+                                && revision.bytes().all(|byte| {
+                                    byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()
+                                })
+                        }),
+                        configuration["settings"]["realtime_metrics"].as_bool(),
+                        configuration["settings"]["compress_reports"].as_bool(),
+                    ) {
+                        if applied_revision.as_deref() != Some(revision)
+                            || realtime_metrics != realtime
+                            || compress_reports != compression
+                        {
+                            let mut saved = read_config(&args.config)?;
+                            if saved["auth_token"].as_str() != Some(token.as_str()) {
+                                bail!("Config changed; refusing to overwrite local credentials");
+                            }
+                            saved["realtime_metrics"] = json!(realtime);
+                            saved["compress_reports"] = json!(compression);
+                            saved["remote_config_revision"] = json!(revision);
+                            write_config(&args.config, &saved)?;
+                            realtime_metrics = realtime;
+                            compress_reports = compression;
+                            applied_revision = Some(revision.to_owned());
+                            config_changed = true;
+                        }
+                    }
+                }
                 metrics_ms = value["metrics_interval_ms"]
                     .as_u64()
+                    .filter(|_| realtime_metrics)
                     .map(|ms| ms.clamp(1000, 60000));
                 if full {
                     full_due = Instant::now() + Duration::from_millis(interval_ms);
@@ -791,6 +869,10 @@ async fn main() -> Result<()> {
             }
             // All other fields, including commands, terminal payloads,
             // tcp_endpoints and update_version, are deliberately ignored.
+        }
+        if config_changed {
+            full_due = Instant::now();
+            continue;
         }
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
