@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.3.2**; the release series starts at **v1.0.0**.
+The current release is **v1.3.3**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -150,9 +150,11 @@ static assets from Cloudflare does not move user data or sessions to the CDN.
 
 ## Run a receiver
 
-Use Python 3.12+, SQLite, trusted HTTPS, Redis, and a hosting environment that can
+Use Python 3.11+, SQLite, trusted HTTPS, Redis, and a hosting environment that can
 run Python WSGI. DirectAdmin and cPanel deployments use the provider's existing web
 server; the application does not open an additional public port.
+The locked dependencies and Passenger WSGI startup have been verified on Python
+3.11 and 3.13 hosting runtimes.
 
 1. Keep release source and private data outside the document root.
 2. Install the exact wheels in `server/requirements.lock` into a `runtime` virtual
@@ -225,6 +227,26 @@ frontend build. A matching version tag on `main` publishes checksums and artifac
 attestations, then deploys the receiver and website-hosted Agent downloads through
 protected regional environments.
 
+The regional deployment matrix preserves the original three targets and adds five
+independent hosting accounts. Each target has its own protected GitHub environment:
+
+| Region code | Public origin | GitHub environment |
+| --- | --- | --- |
+| `us` | https://monitor.20290708.xyz | `public-production` |
+| `sg` | https://sg.monitor.20290708.xyz | `public-singapore` |
+| `uk` | https://wm-uk.myfastools.com | `public-united-kingdom` |
+| `sg-advin` | https://sg-advin.monitor.20290708.xyz | `public-singapore-advin` |
+| `us-mia` | https://us-mia.monitor.20290708.xyz | `public-miami` |
+| `sg-dap` | https://sg-dap.monitor.20290708.xyz | `public-singapore-dapanel` |
+| `fiber100` | https://fiber.monitor.20290708.xyz | `public-fiber100` |
+| `uk2` | https://wm.m.recipes | `public-united-kingdom-secondary` |
+
+Each hosting account must pass its receiver bootstrap before its first tagged
+deployment. Keep its database, encryption secret, Redis socket and credentials
+independent. Configure the receiver's `region_id` and `regions` catalog at startup;
+`/api/regions` supplies Agent region selection without compiled node addresses.
+A command copied from a regional site continues to register with that same origin.
+
 Deployment verifies the release's exact inventory, hashes, tag, and provenance.
 The private gate installs an immutable release, activates it, checks health, and
 restores the previous hosting configuration on failure. Application data and
@@ -233,7 +255,11 @@ installed Agents.
 
 Supported deployment transports:
 
-- Restricted SSH with a dedicated key and pinned host key.
+- Restricted SSH with a dedicated key and pinned host key. Set environment variable
+  `PUBLIC_DEPLOY_PORT` for an account using a custom SSH port; omission defaults to
+  22. CI accepts only decimal ports 1–65535 and keeps strict host-key validation.
+  For custom ports, store the matching `[host]:port` entry in
+  `PUBLIC_DEPLOY_KNOWN_HOSTS`; changing a port never bypasses the pinned key.
 - DirectAdmin's authenticated file and terminal APIs.
 - cPanel's authenticated file and account Cron APIs, using a one-shot deployment
   command and preserving existing account jobs.

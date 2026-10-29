@@ -156,6 +156,16 @@ jobs:
             environment: public-singapore
           - region: uk
             environment: public-united-kingdom
+          - region: sg-advin
+            environment: public-singapore-advin
+          - region: us-mia
+            environment: public-miami
+          - region: sg-dap
+            environment: public-singapore-dapanel
+          - region: fiber100
+            environment: public-fiber100
+          - region: uk2
+            environment: public-united-kingdom-secondary
     environment: ${{ matrix.environment }}
     concurrency:
       group: public-receiver-production-${{ matrix.region }}
@@ -174,6 +184,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
           DEPLOY_HOST: ${{ vars.PUBLIC_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.PUBLIC_DEPLOY_PORT }}
           PUBLIC_ORIGIN: ${{ vars.PUBLIC_ORIGIN }}
           PUBLIC_ASSETS_ORIGIN: ${{ vars.PUBLIC_ASSETS_ORIGIN }}
           DEPLOY_TRANSPORT: ${{ vars.PUBLIC_DEPLOY_TRANSPORT }}
@@ -230,7 +241,10 @@ jobs:
           if [ "$DEPLOY_TRANSPORT" = directadmin ] || [ "$DEPLOY_TRANSPORT" = cpanel ]; then
             python3 ops/panel_deploy.py "$temporary/delivery.zip" "$RELEASE_TAG" "$sha"
           else
-            ssh -i "$temporary/identity" -o KexAlgorithms=diffie-hellman-group14-sha256 -c aes128-ctr -o BatchMode=yes -o ConnectTimeout=10 \
+            DEPLOY_PORT="${DEPLOY_PORT:-22}"
+            [[ "$DEPLOY_PORT" =~ ^[1-9][0-9]{0,4}$ ]]
+            (( DEPLOY_PORT >= 1 && DEPLOY_PORT <= 65535 ))
+            ssh -p "$DEPLOY_PORT" -i "$temporary/identity" -o KexAlgorithms=diffie-hellman-group14-sha256 -c aes128-ctr -o BatchMode=yes -o ConnectTimeout=10 \
               -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$temporary/known_hosts" \
               "$DEPLOY_USER@$DEPLOY_HOST" "deploy $RELEASE_TAG $sha" < "$temporary/delivery.zip"
           fi
