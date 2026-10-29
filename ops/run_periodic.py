@@ -5,8 +5,14 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 private = Path(__file__).resolve().parent
+watchdog = private / "redis_watchdog.py"
+if watchdog.is_file() and not watchdog.is_symlink():
+    subprocess.run([sys.executable, str(watchdog)], check=True, timeout=15)
+if not (private / "active-release.json").exists():
+    raise SystemExit(0)
 active = json.loads((private / "active-release.json").read_text())
 tag = active.get("tag", "")
 if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
