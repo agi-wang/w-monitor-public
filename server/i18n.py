@@ -3,6 +3,18 @@ import html
 import re
 
 EN = {
+    '密钥验证失败，请重新恢复或登录': 'Invalid key proof',
+    '密钥验证已过期，请重试': 'Expired or replayed key proof',
+    '无效密钥验证': 'Invalid key challenge',
+    '恢复密钥无效或已轮换': 'Unknown space key',
+    '此密钥已关联其他空间': 'Key already belongs to another space',
+    '请通过轮换恢复密钥更换已绑定的密钥': 'Rotate the recovery key explicitly',
+    '设备密钥已更改，请重新接入': 'Device key changed concurrently',
+    '设备签名验证失败': 'Invalid device signature',
+    '设备上报签名已过期或重复': 'Replayed device report',
+    '请刷新页面后再轮换恢复密钥': 'Refresh this page to rotate the client-held recovery key',
+    '无法在此浏览器保存密钥，请务必保存恢复口令。': 'Cannot remember keys in this browser. Save your recovery key.',
+    '保存后可登录 W-ID 领用空间，换浏览器也能找回。退出登录不会解除账号绑定。': 'After saving, sign in with W-ID to claim this space and recover it in other browsers. Signing out does not unlink the account.',
     '在线配置': 'Online settings',
     '保存配置': 'Save settings',
     '正在读取配置…': 'Loading settings…',

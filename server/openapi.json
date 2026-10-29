@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "W Monitor Public API",
-    "version": "1.0.3",
+    "version": "1.1.0",
     "description": "Independent read-only telemetry receiver. No host-control APIs, update executors or private W Monitor dependencies. Recovery and registration secrets are shown once and persisted only as SHA-256 digests. Monitoring-space management does not operate monitored hosts. Dynamic telemetry lives only in encrypted Redis; SQLite holds durable user/space metadata, credential digests and notification delivery bookkeeping. Missing Redis is unknown, never a SQLite telemetry fallback. AES-GCM addresses are purpose-bound and never replace authentication. The backend negotiates zh-CN/en with Accept-Language and returns Content-Language; unsupported languages fall back to en. User/host text is preserved."
   },
   "servers": [
@@ -229,6 +229,29 @@
             "$ref": "#/components/schemas/AgentSettings"
           }
         }
+      },
+      "SpaceKeyProof": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "public_key",
+          "challenge",
+          "signature"
+        ],
+        "properties": {
+          "public_key": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "challenge": {
+            "type": "string",
+            "maxLength": 2048
+          },
+          "signature": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{128}$"
+          }
+        }
       }
     }
   },
@@ -337,6 +360,9 @@
                   "auto_public_page": {
                     "type": "boolean",
                     "default": false
+                  },
+                  "key_proof": {
+                    "$ref": "#/components/schemas/SpaceKeyProof"
                   }
                 }
               }
@@ -362,7 +388,7 @@
             }
           }
         ],
-        "description": " Optional auto_public_page=true creates an empty public page and returns ingest_url/manage_url/status_url. Only the first real registered device is selected automatically; later devices remain private until explicitly selected."
+        "description": " Optional auto_public_page=true creates an empty public page and returns ingest_url/manage_url/status_url. Only the first real registered device is selected automatically; later devices remain private until explicitly selected. Optional key_proof registers/rotates a client-generated ownership key; the response contains key_public and never the wmr2_ private recovery seed. Legacy creation without proof still returns wmr_ for compatibility; bound-key spaces require proof for claim/rotation."
       }
     },
     "/api/spaces/restore": {
@@ -434,7 +460,8 @@
               "format": "uri"
             }
           }
-        ]
+        ],
+        "description": "Legacy wmr_ recovery remains supported. New wmr2_ recovery keys stay on the client; derive Ed25519 locally and use /api/keys/challenge then /api/keys/restore. A successful restore rotates the browser session."
       }
     },
     "/api/spaces/select": {
@@ -544,7 +571,12 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object"
+                "type": "object",
+                "properties": {
+                  "key_proof": {
+                    "$ref": "#/components/schemas/SpaceKeyProof"
+                  }
+                }
               }
             }
           }
@@ -567,7 +599,8 @@
               "format": "uri"
             }
           }
-        ]
+        ],
+        "description": " Optional key_proof registers/rotates a client-generated ownership key; the response contains key_public and never the wmr2_ private recovery seed. Legacy creation without proof still returns wmr_ for compatibility; bound-key spaces require proof for claim/rotation."
       }
     },
     "/api/spaces/delete": {
@@ -678,7 +711,12 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object"
+                "type": "object",
+                "properties": {
+                  "key_proof": {
+                    "$ref": "#/components/schemas/SpaceKeyProof"
+                  }
+                }
               }
             }
           }
@@ -701,7 +739,8 @@
               "format": "uri"
             }
           }
-        ]
+        ],
+        "description": " Optional key_proof registers/rotates a client-generated ownership key; the response contains key_public and never the wmr2_ private recovery seed. Legacy creation without proof still returns wmr_ for compatibility; bound-key spaces require proof for claim/rotation."
       }
     },
     "/api/bootstrap/rotate": {
@@ -1890,6 +1929,9 @@
                     },
                     "agent_config": {
                       "$ref": "#/components/schemas/AgentConfig"
+                    },
+                    "device_key_bound": {
+                      "type": "boolean"
                     }
                   }
                 }
@@ -1915,7 +1957,7 @@
             "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
           }
         },
-        "description": "Maximum decoded UTF-8 JSON body: 8 MiB. Authorization: Bearer bootstrap or bound machine token. Machine tokens are bound to one space and agent_id. Replies contain scope=telemetry, commands=[], and a bounded report interval; first registration returns a sat_ machine token. No commands, acknowledgements, alternate control transport or update directives are processed. Unsupported delta snapshots request a full report. Additional fields are tolerated. The fixed endpoint routes reports solely by the hashed Bearer credential; URLs never contain tenant credentials. A missing Redis write returns 503 and does not acknowledge the report. Identity and gzip encodings are accepted, both bounded to 8 MiB. Steady-state reports never write SQLite. Compressed Redis snapshots expire after 300 seconds; last-seen metadata remains. Responses include runtime-configured report_interval_ms and metrics_interval_ms. Metrics samples require bound device credentials and update compact Redis metadata only; full diagnostic snapshots retain their own cadence and TTL. Protection is per valid credential, allowing many devices behind one NAT. Replies may include agent_config (AgentConfig schema), limited to realtime_metrics and compress_reports. Agents advertise telemetry.settings=1, telemetry.metrics, telemetry.compression and telemetry.config_revision. Unknown or malformed settings envelopes are ignored by the Agent. Desired preferences are durable; steady-state reports only read their indexed device_settings row and never acquire the SQLite writer lock.",
+        "description": "Maximum decoded UTF-8 JSON body: 8 MiB. Authorization: Bearer bootstrap or bound machine token. Machine tokens are bound to one space and agent_id. Replies contain scope=telemetry, commands=[], and a bounded report interval; first registration returns a sat_ machine token. No commands, acknowledgements, alternate control transport or update directives are processed. Unsupported delta snapshots request a full report. Additional fields are tolerated. The fixed endpoint routes reports solely by the hashed Bearer credential; URLs never contain tenant credentials. A missing Redis write returns 503 and does not acknowledge the report. Identity and gzip encodings are accepted, both bounded to 8 MiB. Steady-state reports never write SQLite. Compressed Redis snapshots expire after 300 seconds; last-seen metadata remains. Responses include runtime-configured report_interval_ms and metrics_interval_ms. Metrics samples require bound device credentials and update compact Redis metadata only; full diagnostic snapshots retain their own cadence and TTL. Protection is per valid credential, allowing many devices behind one NAT. Replies may include agent_config (AgentConfig schema), limited to realtime_metrics and compress_reports. Agents advertise telemetry.settings=1, telemetry.metrics, telemetry.compression and telemetry.config_revision. Unknown or malformed settings envelopes are ignored by the Agent. Desired preferences are durable; steady-state reports only read their indexed device_settings row and never acquire the SQLite writer lock. Agents1.1.0+ keep an independent Ed25519 seed in owner-only local config and submit X-WM-Public-Key, X-WM-Timestamp (Unix milliseconds), X-WM-Nonce (16-byte lower hex), X-WM-Signature. Sign LF-joined wm-device-v1, fixed origin, POST, /api/v1/report, kind(full/metrics), encoding(identity/gzip), SHA256(bearer token), timestamp, nonce, SHA256(exact wire body). Clock tolerance is300s. Redis atomically requires a strictly increasing signed timestamp per key+credential; one replay slot per device binding expires600s. First valid signed report binds that device key without changing token/identity; thereafter unsigned or different-key reports fail. Unbound legacy devices remain valid. Private keys are never submitted.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1938,6 +1980,51 @@
               ]
             },
             "description": "Required for metrics-only samples (64 KiB maximum decoded/wire); omit for full reports."
+          },
+          {
+            "name": "X-WM-Public-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64,
+              "pattern": "^[a-f0-9]+$"
+            },
+            "description": "Required once this device has bound a public key; absent for unbound legacy devices."
+          },
+          {
+            "name": "X-WM-Nonce",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 32,
+              "maxLength": 32,
+              "pattern": "^[a-f0-9]+$"
+            },
+            "description": "Required once this device has bound a public key; absent for unbound legacy devices."
+          },
+          {
+            "name": "X-WM-Signature",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 128,
+              "maxLength": 128,
+              "pattern": "^[a-f0-9]+$"
+            },
+            "description": "Required once this device has bound a public key; absent for unbound legacy devices."
+          },
+          {
+            "name": "X-WM-Timestamp",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]{13,16}$"
+            }
           }
         ]
       }
@@ -2250,6 +2337,231 @@
             }
           }
         }
+      }
+    },
+    "/api/keys/challenge": {
+      "post": {
+        "summary": "Issue a one-time session/origin/purpose-bound Ed25519 challenge",
+        "security": [
+          {
+            "BrowserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "purpose",
+                  "public_key"
+                ],
+                "properties": {
+                  "purpose": {
+                    "enum": [
+                      "create",
+                      "restore",
+                      "bind",
+                      "rotate",
+                      "claim"
+                    ]
+                  },
+                  "public_key": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "Never receives or returns a private key. Challenge expires after 120 seconds and can be consumed once. Signature message is wm-space-v1 + LF + fixed public origin + LF + purpose + LF + sealed challenge. Proof must match the current browser session. Restore rotates session ID/CSRF. Bind/rotate/claim additionally require the current-space operation token; account claim still requires verified W-ID login. Existing bound keys can change only via explicit recovery rotation/claim."
+      }
+    },
+    "/api/keys/restore": {
+      "post": {
+        "summary": "Restore ownership using a client-held space key",
+        "security": [
+          {
+            "BrowserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "key_proof"
+                ],
+                "properties": {
+                  "key_proof": {
+                    "$ref": "#/components/schemas/SpaceKeyProof"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "Never receives or returns a private key. Challenge expires after 120 seconds and can be consumed once. Signature message is wm-space-v1 + LF + fixed public origin + LF + purpose + LF + sealed challenge. Proof must match the current browser session. Restore rotates session ID/CSRF. Bind/rotate/claim additionally require the current-space operation token; account claim still requires verified W-ID login. Existing bound keys can change only via explicit recovery rotation/claim."
+      }
+    },
+    "/api/keys/bind": {
+      "post": {
+        "summary": "Bind a client key to a legacy authenticated space",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store"
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "key_proof"
+                ],
+                "properties": {
+                  "key_proof": {
+                    "$ref": "#/components/schemas/SpaceKeyProof"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "Never receives or returns a private key. Challenge expires after 120 seconds and can be consumed once. Signature message is wm-space-v1 + LF + fixed public origin + LF + purpose + LF + sealed challenge. Proof must match the current browser session. Restore rotates session ID/CSRF. Bind/rotate/claim additionally require the current-space operation token; account claim still requires verified W-ID login. Existing bound keys can change only via explicit recovery rotation/claim."
       }
     }
   }

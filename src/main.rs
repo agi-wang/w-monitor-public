@@ -5,6 +5,7 @@
 compile_error!("W-Monitor Lite currently supports Linux only");
 mod cache_scan;
 mod collectors;
+mod keys;
 mod network_diag;
 mod runtime_paths;
 mod security_advisories;
@@ -301,15 +302,34 @@ async fn public_setup(origin: &str, language: &str) -> Result<Value> {
     let csrf = session["csrf"]
         .as_str()
         .context("Missing setup CSRF token")?;
+    let (space_key, space_seed) = keys::SigningKey::generate()?;
+    let public_key = space_key.public();
+    let response = client
+        .post(format!("{origin}/api/keys/challenge"))
+        .header("Origin", origin)
+        .header("Cookie", &cookie)
+        .header("X-CSRF-Token", csrf)
+        .json(&json!({"purpose":"create","public_key":public_key}))
+        .send()
+        .await?;
+    let challenge = response_json(response).await?;
+    let challenge_value = challenge["challenge"]
+        .as_str()
+        .context("Missing space challenge")?;
+    let message = format!("wm-space-v1\n{origin}\ncreate\n{challenge_value}");
     // Creating a space is never retried automatically: a lost response may
     // already have created ownership that only its recovery key can restore.
     let response = client.post(format!("{origin}/api/spaces/create"))
-        .header("Origin", origin).header("Cookie", cookie).header("X-CSRF-Token", csrf)
+        .header("Origin", origin).header("Cookie", &cookie).header("X-CSRF-Token", csrf)
         .header("Accept-Language", language)
-        .json(&json!({"title": SystemInfo::detect().hostname.chars().take(80).collect::<String>(), "auto_public_page": true}))
+        .json(&json!({"title": SystemInfo::detect().hostname.chars().take(80).collect::<String>(), "auto_public_page": true,"key_proof":{"public_key":public_key,"challenge":challenge_value,"signature":space_key.sign(&message)}}))
         .send().await?;
-    let result = response_json(response).await?;
-    for (field, prefix, size) in [("recovery", "wmr_", 64), ("bootstrap_key", "wmb_", 64)] {
+    let mut result = response_json(response).await?;
+    if result["key_public"].as_str() != Some(public_key.as_str()) {
+        bail!("Server did not bind the space public key");
+    }
+    result["recovery"] = json!(format!("wmr2_{space_seed}"));
+    for (field, prefix, size) in [("recovery", "wmr2_", 64), ("bootstrap_key", "wmb_", 64)] {
         let value = result[field].as_str().context("Missing setup credential")?;
         if !value.starts_with(prefix)
             || value.len() != prefix.len() + size
@@ -348,6 +368,11 @@ async fn public_setup(origin: &str, language: &str) -> Result<Value> {
             "Public status URL",
         ]
     };
+    result["manage_url"] = json!(format!(
+        "{}#recovery={}",
+        result["manage_url"].as_str().unwrap(),
+        result["recovery"].as_str().unwrap()
+    ));
     for (label, field) in labels
         .into_iter()
         .zip(["recovery", "manage_url", "status_url"])
@@ -367,6 +392,7 @@ async fn post_report(
     body: &[u8],
     compressed: bool,
     metrics: bool,
+    signing_key: &keys::SigningKey,
 ) -> Result<Value> {
     // No redirect can forward a credential. The configured origin is the only
     // telemetry destination, and every request has a whole-request deadline.
@@ -384,6 +410,10 @@ async fn post_report(
     } else {
         request
     };
+    let mut request = request;
+    for (name, value) in signing_key.headers(endpoint, token, body, compressed, metrics)? {
+        request = request.header(name, value);
+    }
     let response = request.body(body.to_vec()).send().await?;
     if !response.status().is_success() {
         bail!("Report rejected: HTTP {}", response.status().as_u16());
@@ -566,6 +596,18 @@ async fn main() -> Result<()> {
         identity.agent_id = id.to_owned();
     }
     persist_config(&args.config, &token, &token, &identity.agent_id)?;
+    let signing_key = if let Some(seed) = config["device_private_key"].as_str() {
+        keys::SigningKey::from_seed(seed)?
+    } else {
+        let (key, seed) = keys::SigningKey::generate()?;
+        let mut saved = read_config(&args.config)?;
+        if saved["auth_token"].as_str() != Some(token.as_str()) {
+            bail!("Config changed during device key creation");
+        }
+        saved["device_private_key"] = json!(seed);
+        write_config(&args.config, &saved)?;
+        key
+    };
     let mut interval_ms = config["interval"]
         .as_u64()
         .unwrap_or(60_000)
@@ -771,7 +813,17 @@ async fn main() -> Result<()> {
         };
         let mut response = None;
         for attempt in 0..=2 {
-            match post_report(&client, &endpoint, &token, &bytes, compressed, !full).await {
+            match post_report(
+                &client,
+                &endpoint,
+                &token,
+                &bytes,
+                compressed,
+                !full,
+                &signing_key,
+            )
+            .await
+            {
                 Ok(value) => {
                     response = Some(value);
                     break;

@@ -7,8 +7,18 @@ import re
 import secrets
 import zlib
 
-from cryptography.exceptions import InvalidTag
+from cryptography.exceptions import InvalidTag, InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+
+def verify_signature(public_key, signature, message):
+    if not isinstance(public_key, str) or not re.fullmatch(r"[a-f0-9]{64}", public_key) or not isinstance(signature, str) or not re.fullmatch(r"[a-f0-9]{128}", signature):
+        raise ValueError("Invalid signature encoding")
+    try:
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_key)).verify(bytes.fromhex(signature), message.encode())
+    except (ValueError, InvalidSignature) as error:
+        raise ValueError("Invalid signature") from error
 
 
 class SealedData:

@@ -22,10 +22,10 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from redis_cache import RedisCache
-from encryption import SealedData
+from encryption import SealedData, verify_signature
 from i18n import EN, language, render_html, translate
 
-VERSION = "1.0.3"
+VERSION = "1.1.0"
 SOURCE_RELEASE = Path(__file__).resolve().parents[1].name
 MAX_BODY = 8 * 1024 * 1024
 WEB = Path(__file__).resolve().parent / "web"
@@ -76,6 +76,9 @@ def private_config():
 
 
 CONFIG, DATA, ORIGIN, INTERVAL, ISSUER = private_config()
+SESSION_TTL = int(CONFIG.get("browser_session_days", 30)) * 86400
+if not 7 * 86400 <= SESSION_TTL <= 365 * 86400:
+    raise RuntimeError("Invalid browser session lifetime")
 def cadence(name, default, minimum, maximum):
     value = CONFIG.get(name, default)
     if type(value) is not int or not minimum <= value <= maximum:
@@ -135,6 +138,12 @@ with database() as _db:
       agent_id TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
       created_at INTEGER NOT NULL, UNIQUE(space_id,agent_id));
     CREATE INDEX IF NOT EXISTS device_space_name ON devices(space_id,name,id);
+    CREATE TABLE IF NOT EXISTS space_keys(
+      space_id TEXT PRIMARY KEY REFERENCES spaces(id) ON DELETE CASCADE,
+      public_key TEXT UNIQUE NOT NULL, created_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS device_keys(
+      device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+      public_key TEXT NOT NULL, created_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS device_settings(
       device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
       settings TEXT NOT NULL);
@@ -197,6 +206,7 @@ def body(environ, maximum=256 * 1024, *, compressed=False):
         def invalid_constant(_value):
             raise ValueError()
         raw = environ["wsgi.input"].read(length)
+        environ["wm.body_sha256"] = hashlib.sha256(raw).hexdigest()
         if encoding == "gzip":
             with gzip.GzipFile(fileobj=io.BytesIO(raw)) as stream:
                 raw = stream.read(maximum + 1)
@@ -211,7 +221,7 @@ def body(environ, maximum=256 * 1024, *, compressed=False):
 
 
 def cookie_header(token):
-    return ("Set-Cookie", f"{COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800" + ("; Secure" if ORIGIN.startswith("https:") else ""))
+    return ("Set-Cookie", f"{COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL}" + ("; Secure" if ORIGIN.startswith("https:") else ""))
 
 
 def browser_session(db, environ, create=False):
@@ -226,6 +236,9 @@ def browser_session(db, environ, create=False):
     token = jar[COOKIE].value if COOKIE in jar else ""
     session = db.execute("SELECT * FROM sessions WHERE hash=? AND expires>?", (digest(token), int(time.time()))).fetchone() if re.fullmatch(r"wms_[a-f0-9]{64}", token) else None
     if session:
+        if session["expires"] < int(time.time()) + SESSION_TTL - 86400:
+            db.execute("UPDATE sessions SET expires=? WHERE hash=?", (int(time.time()) + SESSION_TTL, session["hash"]))
+            return dict(session), [cookie_header(token)]
         return dict(session), []
     if not create:
         raise Rejected(401, "请创建、恢复或登录监控空间")
@@ -233,7 +246,7 @@ def browser_session(db, environ, create=False):
     now = int(time.time())
     db.execute("DELETE FROM sessions WHERE hash IN (SELECT hash FROM sessions WHERE expires<? LIMIT 128)", (now,))
     token = secret("wms_")
-    session = {"hash": digest(token), "csrf": secrets.token_hex(32), "space_id": None, "subject": None, "label": None, "expires": now + 604800}
+    session = {"hash": digest(token), "csrf": secrets.token_hex(32), "space_id": None, "subject": None, "label": None, "expires": now + SESSION_TTL}
     db.execute("INSERT INTO sessions(hash,csrf,expires) VALUES(?,?,?)", (session["hash"], session["csrf"], session["expires"]))
     return session, [cookie_header(token)]
 
@@ -304,6 +317,60 @@ def live_metadata(rows):
             except ValueError:
                 pass
     return result, True
+
+
+def space_proof(db, session, proof, purpose, space_id=None):
+    if not isinstance(proof, dict) or set(proof) != {"public_key", "challenge", "signature"}:
+        raise Rejected(401, "密钥验证失败，请重新恢复或登录")
+    try:
+        challenge = proof["challenge"]
+        if not isinstance(challenge, str) or len(challenge) > 2048:
+            raise ValueError()
+        payload = BOX.open("key-challenge", challenge)
+        public_key = proof["public_key"]
+        if payload.get("session") != session["hash"] or payload.get("purpose") != purpose or payload.get("public_key") != public_key or payload.get("space") != space_id or not int(time.time()) <= payload.get("expires", 0) <= int(time.time()) + 120:
+            raise ValueError()
+        verify_signature(public_key, proof["signature"], "wm-space-v1\n" + ORIGIN + "\n" + purpose + "\n" + challenge)
+    except (KeyError, ValueError, TypeError):
+        raise Rejected(401, "密钥验证失败，请重新恢复或登录") from None
+    used = CACHE.command("SET", NAMESPACE + "proof:" + digest(challenge), "1", "NX", "EX", 120)
+    if used != "OK":
+        raise Rejected(401 if CACHE.healthy() else 503, "密钥验证已过期，请重试")
+    return public_key
+
+
+def remember_space_key(db, space_id, public_key):
+    other = db.execute("SELECT space_id FROM space_keys WHERE public_key=?", (public_key,)).fetchone()
+    if other and other[0] != space_id:
+        raise Rejected(409, "此密钥已关联其他空间")
+    db.execute("INSERT INTO space_keys(space_id,public_key,created_at) VALUES(?,?,?) ON CONFLICT(space_id) DO UPDATE SET public_key=excluded.public_key,created_at=excluded.created_at", (space_id, public_key, int(time.time())))
+
+
+def grant_space(db, session, space_id):
+    token = secret("wms_")
+    db.execute("UPDATE sessions SET hash=?,csrf=?,space_id=?,expires=? WHERE hash=?", (digest(token), secrets.token_hex(32), space_id, int(time.time()) + SESSION_TTL, session["hash"]))
+    return {"ok": True}, [cookie_header(token)]
+
+
+def device_proof(environ, expected):
+    public_key = environ.get("HTTP_X_WM_PUBLIC_KEY", "")
+    if not public_key and not expected:
+        return None
+    timestamp = environ.get("HTTP_X_WM_TIMESTAMP", "")
+    nonce = environ.get("HTTP_X_WM_NONCE", "")
+    try:
+        if expected and public_key != expected or not re.fullmatch(r"[0-9]{13,16}", timestamp) or abs(int(timestamp) - int(time.time() * 1000)) > 300000 or not re.fullmatch(r"[a-f0-9]{32}", nonce):
+            raise ValueError()
+        message = "\n".join(["wm-device-v1", ORIGIN, "POST", "/api/v1/report", environ.get("HTTP_X_WM_REPORT_KIND", "full"), environ.get("HTTP_CONTENT_ENCODING", environ.get("CONTENT_ENCODING", "identity")), digest(environ["HTTP_AUTHORIZATION"][7:]), timestamp, nonce, environ["wm.body_sha256"]])
+        verify_signature(public_key, environ.get("HTTP_X_WM_SIGNATURE", ""), message)
+    except (ValueError, KeyError, TypeError):
+        raise Rejected(401, "设备签名验证失败") from None
+    # One timestamp slot per key: constant replay-cache memory per device.
+    script = "local old=redis.call('GET',KEYS[1]); if old and tonumber(old)>=tonumber(ARGV[1]) then return 0 end; redis.call('SET',KEYS[1],ARGV[1],'EX',600); return 1"
+    accepted = CACHE.command("EVAL", script, 1, NAMESPACE + "signed:" + digest(public_key + environ["HTTP_AUTHORIZATION"][7:]), timestamp)
+    if accepted != 1:
+        raise Rejected(503 if accepted is None else 401, "设备上报签名已过期或重复")
+    return public_key
 
 
 def network_rate(value):
@@ -432,10 +499,12 @@ def receive(db, environ):
     # adding an Agent update/control mechanism.
     interval = max(5000, min(300000, INTERVAL + int(digest(agent)[:8], 16) % max(1, INTERVAL // 5) - INTERVAL // 10))
     reply = {"status": "ok", "agent_id": agent, "commands": [], "report_role": "primary", "report_interval_ms": interval, "metrics_interval_ms": METRICS_INTERVAL, "scope": "telemetry"}
+    existing = machine or db.execute("SELECT * FROM devices WHERE space_id=? AND agent_id=?", (space_id, agent)).fetchone()
+    bound = db.execute("SELECT public_key FROM device_keys WHERE device_id=?", (existing["id"],)).fetchone() if existing else None
+    signed_key = device_proof(environ, bound[0] if bound else None)
     if report.get("compact", {}).get("mode") == "delta":
         db.rollback()
         return {**reply, "request_full_report": True}
-    existing = machine or db.execute("SELECT * FROM devices WHERE space_id=? AND agent_id=?", (space_id, agent)).fetchone()
     name = report.get("hostname", agent)
     name = name[:120] if isinstance(name, str) and name.strip() else agent[:120]
     collectors = report["collectors"]
@@ -450,6 +519,14 @@ def receive(db, environ):
             # Later registrations never add devices to this page automatically.
             db.execute("UPDATE pages SET selection=? WHERE id=? AND space_id=? AND enabled=1", (json.dumps([device_id]), space["auto_page"], space_id))
             db.execute("UPDATE spaces SET auto_page=NULL WHERE id=?", (space_id,))
+    if signed_key:
+        if not bound:
+            # First signed report upgrades this device without changing its token.
+            db.execute("INSERT INTO device_keys(device_id,public_key,created_at) VALUES(?,?,?) ON CONFLICT(device_id) DO NOTHING", (device_id, signed_key, int(time.time())))
+            current_key = db.execute("SELECT public_key FROM device_keys WHERE device_id=?", (device_id,)).fetchone()[0]
+            if current_key != signed_key:
+                raise Rejected(403, "设备密钥已更改，请重新接入")
+        reply["device_key_bound"] = True
     report_metadata = report.get("metadata", {})
     capabilities = report_metadata.get("capabilities", {}) if isinstance(report_metadata, dict) else {}
     supports_metrics = metrics or (isinstance(capabilities, dict) and capabilities.get("telemetry.metrics") is True)
@@ -578,7 +655,8 @@ def route(db, environ):
     if method == "GET" and path == "/api/session":
         space = db.execute("SELECT * FROM spaces WHERE id=?", (session["space_id"],)).fetchone()
         owned = db.execute("SELECT * FROM spaces WHERE owner=? ORDER BY created_at", (session["subject"],)).fetchall() if session["subject"] else []
-        return 200, {"csrf": session["csrf"], "space": space_summary(space) if space else None, "manage_token": BOX.seal("manage", {"id": space["id"]}) if space else None, "ingest_url": ORIGIN + "/api/v1/report" if space else None, "spaces": [space_summary(row) for row in owned], "login": {"available": bool(ISSUER and CONFIG.get("oidc_client_id") and CONFIG.get("oidc_client_secret")), "authenticated": bool(session["subject"]), "label": session["label"]}}, headers
+        key_row = db.execute("SELECT public_key FROM space_keys WHERE space_id=?", (space["id"],)).fetchone() if space else None
+        return 200, {"csrf": session["csrf"], "key_public": key_row[0] if key_row else None, "space": space_summary(space) if space else None, "manage_token": BOX.seal("manage", {"id": space["id"]}) if space else None, "ingest_url": ORIGIN + "/api/v1/report" if space else None, "spaces": [space_summary(row) for row in owned], "login": {"available": bool(ISSUER and CONFIG.get("oidc_client_id") and CONFIG.get("oidc_client_secret")), "authenticated": bool(session["subject"]), "label": session["label"]}}, headers
     if method == "GET" and path == "/auth/callback":
         query = parse_qs(environ.get("QUERY_STRING", ""))
         state, code = query.get("state", [""])[0], query.get("code", [""])[0]
@@ -600,7 +678,7 @@ def route(db, environ):
         email = identity.get("email")
         verified_email = BOX.seal("verified-email:" + owner, email) if identity.get("email_verified") is True and isinstance(email, str) and len(email) <= 254 and "@" in email and "\r" not in email and "\n" not in email else None
         owned = db.execute("SELECT id FROM spaces WHERE owner=? ORDER BY created_at LIMIT 1", (owner,)).fetchone()
-        db.execute("UPDATE sessions SET hash=?,csrf=?,subject=?,label=?,expires=?,space_id=COALESCE(space_id,?),verified_email=? WHERE hash=?", (digest(token), secrets.token_hex(32), owner, label[:80] if isinstance(label, str) else "已登录用户", int(time.time()) + 604800, owned["id"] if owned else None, verified_email, session["hash"]))
+        db.execute("UPDATE sessions SET hash=?,csrf=?,subject=?,label=?,expires=?,space_id=COALESCE(space_id,?),verified_email=? WHERE hash=?", (digest(token), secrets.token_hex(32), owner, label[:80] if isinstance(label, str) else "已登录用户", int(time.time()) + SESSION_TTL, owned["id"] if owned else None, verified_email, session["hash"]))
         db.commit()
         return 303, b"", [("Location", "/"), cookie_header(token)]
     if method == "GET" and path == "/api/devices":
@@ -653,6 +731,30 @@ def route(db, environ):
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
         db.execute("UPDATE sessions SET oauth_state=?,oauth_verifier=?,oauth_expires=? WHERE hash=?", (digest(state), verifier, int(time.time()) + 300, session["hash"]))
         return 200, {"url": ISSUER + "/oauth/authorize?" + urlencode({"response_type": "code", "client_id": CONFIG["oidc_client_id"], "redirect_uri": ORIGIN + "/auth/callback", "scope": "openid profile email", "state": state, "code_challenge": challenge, "code_challenge_method": "S256"})}, headers
+    if path == "/api/keys/challenge":
+        if set(value) != {"purpose", "public_key"}:
+            raise Rejected(400, "Invalid key challenge fields")
+        purpose, public_key = value.get("purpose"), value.get("public_key")
+        if purpose not in ("create", "restore", "bind", "rotate", "claim") or not isinstance(public_key, str) or not re.fullmatch(r"[a-f0-9]{64}", public_key):
+            raise Rejected(400, "无效密钥验证")
+        selected = None
+        if purpose in ("bind", "rotate", "claim"):
+            selected = current_space(db, session)["id"]
+            operation_guard(environ, {"id": selected})
+        challenge = BOX.seal("key-challenge", {"session": session["hash"], "purpose": purpose, "public_key": public_key, "space": selected, "expires": int(time.time()) + 120, "nonce": secrets.token_hex(16)})
+        return 200, {"challenge": challenge, "message": "wm-space-v1\n" + ORIGIN + "\n" + purpose + "\n" + challenge}, headers
+    if path == "/api/keys/restore":
+        if set(value) != {"key_proof"}:
+            raise Rejected(400, "Invalid key proof fields")
+        limited("restore:" + environ.get("REMOTE_ADDR", ""), 10, 60)
+        public_key = space_proof(db, session, value.get("key_proof"), "restore")
+        begin_browser_write(db, session)
+        row = db.execute("SELECT space_id FROM space_keys WHERE public_key=?", (public_key,)).fetchone()
+        if not row:
+            raise Rejected(401, "恢复密钥无效或已轮换")
+        result, cookies = grant_space(db, session, row[0])
+        db.commit()
+        return 200, result, cookies
     if path == "/api/logout":
         db.execute("DELETE FROM sessions WHERE hash=?", (session["hash"],))
         return 200, {"ok": True}, headers
@@ -665,10 +767,16 @@ def route(db, environ):
         if not isinstance(title, str) or not 1 <= len(title.strip()) <= 80:
             raise Rejected(400, "空间名称需要 1–80 个字符")
         recovery, bootstrap, space_id = secret("wmr_"), secret("wmb_"), secrets.token_hex(16)
+        public_key = space_proof(db, session, value["key_proof"], "create") if "key_proof" in value else None
         begin_browser_write(db, session)
         channel = ""  # Retained storage column for existing databases; no ingest links.
         db.execute("INSERT INTO spaces(id,title,recovery_hash,bootstrap_hash,owner,created_at,channel) VALUES(?,?,?,?,?,?,?)", (space_id, title.strip(), digest(recovery), digest(bootstrap), session["subject"], int(time.time()), channel))
-        result = {"recovery": recovery, "bootstrap_key": bootstrap}
+        result = {"bootstrap_key": bootstrap}
+        if public_key:
+            remember_space_key(db, space_id, public_key)
+            result["key_public"] = public_key
+        else:
+            result["recovery"] = recovery
         if automatic:
             page_id = secrets.token_hex(16)
             slug = BOX.seal("public", {"id": page_id})
@@ -683,11 +791,13 @@ def route(db, environ):
         recovery = value.get("recovery", "")
         if not isinstance(recovery, str) or not re.fullmatch(r"wmr_[a-f0-9]{64}", recovery):
             raise Rejected(401, "恢复口令无效")
+        begin_browser_write(db, session)
         row = db.execute("SELECT id FROM spaces WHERE recovery_hash=?", (digest(recovery),)).fetchone()
         if not row:
             raise Rejected(401, "恢复口令无效或已轮换")
-        db.execute("UPDATE sessions SET space_id=? WHERE hash=?", (row["id"], session["hash"]))
-        return 200, {"ok": True}, headers
+        result, cookies = grant_space(db, session, row["id"])
+        db.commit()
+        return 200, result, cookies
     if path == "/api/spaces/select":
         row = db.execute("SELECT id FROM spaces WHERE id=? AND owner=?", (value.get("id"), session["subject"])).fetchone() if session["subject"] else None
         if not row:
@@ -696,6 +806,17 @@ def route(db, environ):
         return 200, {"ok": True}, headers
     space = current_space(db, session)
     operation_guard(environ, space)
+    if path == "/api/keys/bind":
+        if set(value) != {"key_proof"}:
+            raise Rejected(400, "Invalid key proof fields")
+        public_key = space_proof(db, session, value.get("key_proof"), "bind", space["id"])
+        begin_browser_write(db, session, space["id"])
+        existing_key = db.execute("SELECT public_key FROM space_keys WHERE space_id=?", (space["id"],)).fetchone()
+        if existing_key and existing_key[0] != public_key:
+            raise Rejected(409, "请通过轮换恢复密钥更换已绑定的密钥")
+        remember_space_key(db, space["id"], public_key)
+        db.commit()
+        return 200, {"ok": True, "key_public": public_key}, headers
     if re.fullmatch(r"/api/devices/[a-f0-9]{32}/settings", path):
         settings = value.get("settings")
         if set(value) != {"settings"} or not isinstance(settings, dict) or set(settings) != {"realtime_metrics", "compress_reports"} or not all(type(item) is bool for item in settings.values()):
@@ -755,6 +876,9 @@ def route(db, environ):
         return 200, {"ok": True}, headers
     if path in ("/api/spaces/claim", "/api/recovery/rotate"):
         recovery, bootstrap = secret("wmr_"), secret("wmb_")
+        public_key = space_proof(db, session, value["key_proof"], "claim" if path.endswith("claim") else "rotate", space["id"]) if "key_proof" in value else None
+        if not public_key and db.execute("SELECT 1 FROM space_keys WHERE space_id=?", (space["id"],)).fetchone():
+            raise Rejected(409, "请刷新页面后再轮换恢复密钥")
         active = begin_browser_write(db, session, space["id"])
         # Claim and revocation serialize with each other; never decide ownership
         # using the snapshot taken before acquiring the write transaction.
@@ -765,9 +889,11 @@ def route(db, environ):
             raise Rejected(403, "需要正常登录，且不能领用其他账号的空间")
         owner = session["subject"] if path.endswith("claim") else space["owner"]
         db.execute("UPDATE spaces SET owner=?,recovery_hash=?,bootstrap_hash=? WHERE id=?", (owner, digest(recovery), digest(bootstrap), space["id"]))
+        if public_key:
+            remember_space_key(db, space["id"], public_key)
         db.execute("DELETE FROM sessions WHERE space_id=? AND hash!=?", (space["id"], session["hash"]))
         db.commit()
-        return 200, {"recovery": recovery, "bootstrap_key": bootstrap}, headers
+        return 200, {"bootstrap_key": bootstrap, **({"key_public": public_key} if public_key else {"recovery": recovery})}, headers
     if path == "/api/bootstrap/rotate":
         key = secret("wmb_")
         begin_browser_write(db, session, space["id"])

@@ -9,6 +9,73 @@ let lastView, currentPage = 0, pollMs = 5000;
 let events, poll, refreshing = false, refreshAgain = false, generation = 0, allowEvents = false;
 let settingsDevice, settingsPoll, settingsSaving = false, settingsSupported = false;
 
+const browserKeys = new Map();
+let autoRestoreAllowed = true;
+function bytesHex(bytes) { return [...new Uint8Array(bytes)].map(value => value.toString(16).padStart(2, "0")).join(""); }
+function hexBytes(value) { return Uint8Array.from(value.match(/../g), byte => parseInt(byte, 16)); }
+function urlBytes(value) { return Uint8Array.from(atob(value.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(value.length / 4) * 4, "=")), character => character.charCodeAt(0)); }
+async function clientKey(recovery) {
+  let pair;
+  if (recovery) {
+    if (!/^wmr2_[a-f0-9]{64}$/.test(recovery)) throw new Error(t("恢复口令无效"));
+    const der = hexBytes("302e020100300506032b657004220420" + recovery.slice(5));
+    pair = { privateKey: await crypto.subtle.importKey("pkcs8", der, "Ed25519", true, ["sign"]) };
+  } else pair = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
+  const jwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
+  const key = { public_key: bytesHex(urlBytes(jwk.x)), privateKey: await crypto.subtle.importKey("jwk", jwk, "Ed25519", false, ["sign"]), recovery: "wmr2_" + bytesHex(urlBytes(jwk.d)) };
+  return key;
+}
+async function keyStore(mode, callback) {
+  const db = await new Promise((resolve, reject) => {
+    const request = indexedDB.open("w-monitor-public-keys", 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("owners", { keyPath: "public_key" });
+    request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+  });
+  try { return await new Promise((resolve, reject) => {
+    const transaction = db.transaction("owners", mode), request = callback(transaction.objectStore("owners"));
+    let result; request.onsuccess = () => { result = request.result; };
+    transaction.oncomplete = () => resolve(result); transaction.onerror = () => reject(transaction.error); transaction.onabort = () => reject(transaction.error);
+  }); } finally { db.close(); }
+}
+async function rememberKey(key) {
+  autoRestoreAllowed = true;
+  const saved = { public_key: key.public_key, privateKey: key.privateKey };
+  browserKeys.set(key.public_key, saved);
+  try { await keyStore("readwrite", store => store.put(saved)); localStorage.setItem("wm-active-public-key", key.public_key); }
+  catch { notice(t("无法在此浏览器保存密钥，请务必保存恢复口令。")); }
+}
+async function savedBrowserKey() {
+  try {
+    const publicKey = localStorage.getItem("wm-active-public-key");
+    return publicKey ? browserKeys.get(publicKey) ?? await keyStore("readonly", store => store.get(publicKey)) : undefined;
+  } catch { return undefined; }
+}
+async function keyProof(key, purpose) {
+  const data = await api("/api/keys/challenge", { purpose, public_key: key.public_key });
+  if (typeof data.challenge !== "string" || !/^wm1_[A-Za-z0-9_-]{40,2048}$/.test(data.challenge)) throw new Error(t("无效密钥验证"));
+  const message = new TextEncoder().encode(`wm-space-v1\n${location.origin}\n${purpose}\n${data.challenge}`);
+  return { public_key: key.public_key, challenge: data.challenge, signature: bytesHex(await crypto.subtle.sign("Ed25519", key.privateKey, message)) };
+}
+async function restoreWithKey(key) {
+  await api("/api/keys/restore", { key_proof: await keyProof(key, "restore") });
+  session = await api("/api/session"); await rememberKey(key);
+}
+async function restoreSpace(recovery) {
+  if (recovery.startsWith("wmr2_")) { await restoreWithKey(await clientKey(recovery)); return; }
+  await api("/api/spaces/restore", { recovery }); session = await api("/api/session");
+  if (!session.key_public) {
+    const key = await clientKey();
+    await api("/api/keys/bind", { key_proof: await keyProof(key, "bind") });
+    await rememberKey(key); return key.recovery;
+  }
+}
+async function rotateSpaceKey(path, purpose) {
+  const key = await clientKey();
+  const data = await api(path, { key_proof: await keyProof(key, purpose) });
+  if (data.key_public !== key.public_key) throw new Error(t("无效密钥验证"));
+  await rememberKey(key); bootstrap = data.bootstrap_key; await loadSession(); showRecovery(key.recovery, true);
+}
+
 function notice(message = "") { $("notice").textContent = message; $("notice").hidden = !message; }
 function node(tag, text, className) {
   const element = document.createElement(tag);
@@ -36,7 +103,7 @@ async function api(path, value) {
   if (response.status === 304 && previous) return previous.data;
   const data = await response.json();
   if (!response.ok) responses.delete(path);
-  if (!response.ok) throw new Error(data.error || t("请求失败（{status}）", { status: response.status }));
+  if (!response.ok) { const error = new Error(data.error || t("请求失败（{status}）", { status: response.status })); error.status = response.status; throw error; }
   const etag = response.headers.get("ETag");
   if (etag) { responses.set(path, { etag, data }); if (responses.size > 8) responses.delete(responses.keys().next().value); }
   return data;
@@ -191,6 +258,17 @@ function startRealtime() {
 async function loadSession() {
   generation += 1; stopRealtime(); responses.clear(); lastView = undefined; currentPage = 0;
   session = await api("/api/session");
+  const fragment = new URLSearchParams(location.hash.slice(1)).get("recovery");
+  if (fragment) {
+    history.replaceState(null, "", location.pathname + location.search);
+    try { await restoreSpace(fragment); session = await api("/api/session"); } catch (error) { notice(error.message); }
+  } else if (autoRestoreAllowed && !session.space && !session.login.authenticated) {
+    const saved = await savedBrowserKey();
+    if (saved) {
+      try { await restoreWithKey(saved); } catch (error) { if ([401, 404].includes(error.status)) { try { localStorage.removeItem("wm-active-public-key"); } catch {} } else notice(error.message); }
+    }
+  }
+
   $("login").hidden = !session.login.available || session.login.authenticated;
   $("logout").hidden = !session.space && !session.login.authenticated;
   $("claim").hidden = !session.space || session.space.claimed || !session.login.authenticated;
@@ -208,8 +286,10 @@ async function loadSession() {
 }
 async function newSpace() {
   const title = prompt(t("为监控空间起一个名字"), t("我的监控空间")); if (!title?.trim()) return;
-  const result = await api("/api/spaces/create", { title: title.trim() });
-  bootstrap = result.bootstrap_key; await loadSession(); showRecovery(result.recovery);
+  const key = await clientKey(); await rememberKey(key);
+  const result = await api("/api/spaces/create", { title: title.trim(), key_proof: await keyProof(key, "create") });
+  if (result.key_public !== key.public_key) throw new Error(t("无效密钥验证"));
+  bootstrap = result.bootstrap_key; await loadSession(); showRecovery(key.recovery);
 }
 function showRecovery(key, rotated = false) {
   $("recovery-key").value = key;
@@ -298,13 +378,13 @@ $("saved-recovery").onclick = () => { $("recovery-dialog").close(); $("recovery-
 $("copy-recovery").onclick = () => run(() => copy($("recovery-key").value));
 for (const id of ["create-space", "new-space"]) $(id).onclick = () => run(newSpace);
 for (const id of ["show-restore", "restore-another"]) $(id).onclick = () => $("restore-dialog").showModal();
-$("restore-form").onsubmit = (event) => { event.preventDefault(); void run(async () => { await api("/api/spaces/restore", { recovery: $("restore-key").value.trim() }); bootstrap = ""; $("restore-dialog").close(); await loadSession(); }); };
+$("restore-form").onsubmit = (event) => { event.preventDefault(); void run(async () => { const backup = await restoreSpace($("restore-key").value.trim()); bootstrap = ""; $("restore-dialog").close(); await loadSession(); if (backup) showRecovery(backup); }); };
 $("login").onclick = () => run(async () => { const data = await api("/api/login", {}); location.assign(data.url); });
-$("logout").onclick = () => run(async () => { await api("/api/logout", {}); bootstrap = ""; await loadSession(); });
-$("claim").onclick = () => run(async () => { const data = await api("/api/spaces/claim", {}); bootstrap = data.bootstrap_key; await loadSession(); showRecovery(data.recovery, true); });
+$("logout").onclick = () => run(async () => { await api("/api/logout", {}); autoRestoreAllowed = false; try { localStorage.removeItem("wm-active-public-key"); } catch {} browserKeys.clear(); bootstrap = ""; await loadSession(); });
+$("claim").onclick = () => run(async () => { await rotateSpaceKey("/api/spaces/claim", "claim"); });
 $("rotate-recovery").onclick = () => run(async () => {
   if (!confirm(t("轮换后，旧恢复口令和接入凭据失效，其他会话退出。已注册设备继续上报。"))) return;
-  const data = await api("/api/recovery/rotate", {}); bootstrap = data.bootstrap_key; showRecovery(data.recovery, true);
+  await rotateSpaceKey("/api/recovery/rotate", "rotate");
 });
 $("space-select").onchange = () => run(async () => { await api("/api/spaces/select", { id: $("space-select").value }); bootstrap = ""; await loadSession(); });
 $("add-device").onclick = () => { updateInstallCommand(); $("install-dialog").showModal(); };

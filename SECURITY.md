@@ -71,3 +71,13 @@ downgrade. An operator can authorize a version rebase to one exact tag using
 owner-only `reset_to_tag` configuration; successful activation consumes it.
 The deploy key can install receiver code and therefore must be protected
 as production access. Agent installation remains a separate manual operation.
+
+
+Spaces and devices use separate client-held Ed25519 keys from 1.1.0. New owner
+seeds never reach the receiver; legacy recovery is preserved until explicit
+rotation. Signed device bindings cannot downgrade to unsigned bearer-only auth.
+Key proofs bind origin/purpose/session, expire and cannot be replayed. Device
+signatures cover exact wire bytes and the bearer credential; Redis keeps one
+monotonic replay slot per binding, not one entry per report. Browser ownership
+uses non-exportable IndexedDB handles plus HttpOnly cookies, not private cookies.
+W-ID claiming remains explicit and cannot grant unrelated tenant access.

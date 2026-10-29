@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.0.3**; the release series starts at **v1.0.0**.
+The current release is **v1.1.0**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -35,6 +35,36 @@ Requirements: Linux AMD64 or ARM64, Bash, curl, and standard GNU utilities inclu
 flag `--verify-provenance` uses GitHub CLI to verify the release attestation.
 
 Keep the recovery key private. It restores the same space across browsers.
+
+New spaces use a client-generated Ed25519 recovery seed (`wmr2_...`). The browser
+stores only a non-exportable signing-key handle in IndexedDB; the server receives
+public keys and one-time proofs, never the seed. HttpOnly, SameSite=Lax cookies
+(Secure on HTTPS) remember the selected space for 30 days, renewed during use.
+Startup value `browser_session_days` is editable within 7-365 days. If a remembered
+cookie expires, a saved browser key can restore the space; explicit logout stops
+automatic restoration. Save the recovery key for other browsers.
+
+Existing `wmr_...` recovery still works. A legacy space can bind a fresh local
+key without removing its original recovery until explicit rotation. Rotation
+replaces recovery/bootstrap credentials and other browser sessions, while keeping
+devices and published pages. New Agent management URLs may contain a recovery
+fragment; it is processed locally and removed before normal navigation, never
+sent in HTTP requests. Treat the entire management link as private.
+
+W-ID client `w-monitor-public` owns login/claiming, with callbacks on all three
+regional origins. Its scoped login providers include GitHub. Claiming persists
+space ownership in SQLite, independently of cookies; logout does not unlink it.
+An account owner can return through W-ID and rotate a lost recovery key locally.
+Anonymous users who lose every key/session must create a new space and run its
+registration command on their devices; nobody can silently claim that lost space.
+
+Each Agent 1.1.0+ stores its own separate device key in 0600 configuration. Its
+first signed report upgrades that device without changing its existing token.
+Old unbound Agents continue reporting and are never auto-updated. Once bound,
+unsigned/different-key requests are rejected; do not downgrade that Agent binary.
+Moving an Agent into a newly owned space requires a local registration command;
+no server command or configuration setting can move it remotely.
+
 
 The setup dialog offers **Realtime resource metrics** and **Compress reports**,
 both enabled by default. Unchecking them adds `--no-realtime` and

@@ -1,4 +1,4 @@
-# Public monitoring contract v1.0.3
+# Public monitoring contract v1.1.0
 
 [OpenAPI](server/openapi.json) describes browser, ingestion and public-status APIs.
 This receiver implements the existing v1.0 full report envelope; it has no Private
@@ -177,3 +177,33 @@ state clears only after both that revision and the exact settings are reported.
 Offline devices retain pending preferences. Installation flags are initial
 preferences; saved online preferences take precedence. Legacy Agents continue
 reporting but require a manual update to support online configuration.
+
+
+### Independent client-held ownership and device keys (1.1.0)
+
+Ed25519 signing uses browser WebCrypto, the existing ring TLS crypto backend in
+Rust, and the locked PyCA cryptography package for server verification. Spaces
+and devices have independent random 32-byte seeds. New recovery is wmr2_ followed
+by 64 lower hex characters; it is never sent to an API. Legacy wmr_ remains a
+legacy recovery secret, not a newly generated private key.
+
+Browser ownership proof: POST /api/keys/challenge with purpose and public_key;
+sign wm-space-v1 LF origin LF purpose LF challenge. Challenges are sealed,
+current-session/purpose/space/public-key bound, expire 120s and are consumed once
+in Redis. Create, bind, restore, rotate and claim paths accept the proof. Restore
+rotates SID/CSRF; account claim additionally verifies the existing W-ID identity.
+Old recovery can bind a fresh key; only explicit rotation revokes the old recovery.
+
+Device proof headers and canonical message are defined in OpenAPI. They bind the
+wire-body hash, bearer-credential hash, kind, encoding, origin and monotonic Unix
+millisecond timestamp. Verification precedes any report acknowledgement. A Redis
+CAS retains one timestamp per key+credential (TTL 600s, clock window 300s), bounding
+memory by active devices instead of report count. Legacy auth remains only for
+unbound devices. The first valid signed report binds the independent public key;
+all subsequent reports require it. Private keys never enter reports or SQLite.
+
+Durable space_keys/device_keys tables cascade on owner-authorized deletion.
+Existing devices, tokens, pages and account relationships remain unchanged.
+Browser cookies persist 30 days by default; browser_session_days accepts 7-365.
+The IndexedDB key is non-exportable; logout clears the active-key reference,
+while saved account ownership remains server-side for explicit future login.
