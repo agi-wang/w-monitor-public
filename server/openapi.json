@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "W Monitor Public API",
-    "version": "1.3.0",
+    "version": "1.3.1",
     "description": "Independent read-only telemetry receiver. No host-control APIs, update executors or private W Monitor dependencies. Recovery and registration secrets are shown once and persisted only as SHA-256 digests. Monitoring-space management does not operate monitored hosts. Dynamic telemetry lives only in encrypted Redis; SQLite holds durable user/space metadata, credential digests and notification delivery bookkeeping. Missing Redis is unknown, never a SQLite telemetry fallback. AES-GCM addresses are purpose-bound and never replace authentication. The backend negotiates zh-CN/en with Accept-Language and returns Content-Language; unsupported languages fall back to en. User/host text is preserved."
   },
   "servers": [
@@ -158,7 +158,8 @@
                   "description": "Network rates count default-route logical interfaces only. Not destination-classified Internet traffic; null when route evidence is unavailable."
                 }
               },
-              "additionalProperties": true
+              "additionalProperties": true,
+              "description": "Anonymous pages default to name/online/last_seen/CPU/memory/disk only. Network fields and history references depend on page visibility."
             }
           },
           "data_available": {
@@ -179,6 +180,22 @@
             "type": "integer",
             "minimum": 500,
             "maximum": 60000
+          },
+          "visibility": {
+            "type": "object",
+            "required": [
+              "network",
+              "history"
+            ],
+            "properties": {
+              "network": {
+                "type": "boolean"
+              },
+              "history": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
           }
         }
       },
@@ -207,6 +224,16 @@
               "type": "string",
               "pattern": "^[a-f0-9]{32}$"
             }
+          },
+          "show_network": {
+            "type": "boolean",
+            "default": false,
+            "description": "Explicitly publish default-egress rates on this page. Omitted means false."
+          },
+          "show_history": {
+            "type": "boolean",
+            "default": false,
+            "description": "Explicitly publish resource history on this page. Omitted means false."
           }
         }
       },
@@ -466,6 +493,165 @@
           }
         },
         "additionalProperties": true
+      },
+      "PublicMetricHistory": {
+        "type": "object",
+        "required": [
+          "columns",
+          "points",
+          "from",
+          "to",
+          "resolution_seconds",
+          "retention_seconds",
+          "max_retention_seconds",
+          "refresh_ms",
+          "storage",
+          "aggregation"
+        ],
+        "properties": {
+          "columns": {
+            "type": "array",
+            "enum": [
+              [
+                "time",
+                "cpu_percent",
+                "memory_percent",
+                "disk_percent"
+              ],
+              [
+                "time",
+                "cpu_percent",
+                "memory_percent",
+                "disk_percent",
+                "network_rx_bps",
+                "network_tx_bps"
+              ]
+            ]
+          },
+          "points": {
+            "type": "array",
+            "maxItems": 720,
+            "items": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "minItems": 4,
+                  "maxItems": 4,
+                  "prefixItems": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0
+                    }
+                  ],
+                  "items": false
+                },
+                {
+                  "type": "array",
+                  "minItems": 6,
+                  "maxItems": 6,
+                  "prefixItems": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0
+                    }
+                  ],
+                  "items": false
+                }
+              ]
+            }
+          },
+          "from": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "to": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "resolution_seconds": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retention_seconds": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_retention_seconds": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "refresh_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "storage": {
+            "const": "redis"
+          },
+          "aggregation": {
+            "const": "sample_weighted_mean"
+          },
+          "network_accounting_scope": {
+            "type": "string",
+            "const": "default_route_interfaces",
+            "description": "Legacy all-interface network samples are omitted; non-network historical samples remain."
+          }
+        },
+        "additionalProperties": true,
+        "description": "Publication history; four columns without network sharing, six with network sharing. History must be explicitly enabled."
       }
     }
   },
@@ -1632,7 +1818,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Success; privileged data and status reads are no-store"
+            "description": "Owned pages include boolean show_network/show_history flags. Existing pages migrate to false."
           },
           "400": {
             "description": "Invalid bounded request"
@@ -2090,11 +2276,30 @@
     },
     "/api/platform-load": {
       "get": {
-        "summary": "Read the cached once-per-minute aggregate platform load",
+        "summary": "Read coarse service availability",
         "security": [],
         "responses": {
           "200": {
-            "description": "Success; privileged data and status reads are no-store"
+            "description": "Success; privileged data and status reads are no-store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "available"
+                  ],
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "collected_at": {
+                      "type": "integer"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid bounded request"
@@ -2115,7 +2320,7 @@
             "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
           }
         },
-        "description": "No tenant identifiers or reports. Missing/stale snapshots return available=false. Request rate, mean processing time and 5xx rate use the previous complete minute. Host load has shared_host scope, not account CPU usage. Numeric metrics are null when no sample exists."
+        "description": "Only available and collected_at. No tenant counts, Redis/RSS, host load or internal performance metrics."
       }
     },
     "/api/v1/report": {
@@ -2887,7 +3092,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MetricHistory"
+                  "$ref": "#/components/schemas/PublicMetricHistory"
                 }
               }
             }
@@ -2907,7 +3112,8 @@
           "503": {
             "description": "Historical storage unavailable or corrupt"
           }
-        }
+        },
+        "description": "Rechecks page enabled/selection/show_history on every request. show_network=false removes network values even from cached data and old refs."
       }
     }
   }

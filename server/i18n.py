@@ -3,6 +3,18 @@ import html
 import re
 
 EN = {
+    '服务状态暂不可用': 'Service status is temporarily unavailable',
+    '状态更新于 {time}': 'Status updated at {time}',
+    '等待服务状态': 'Waiting for service status',
+    '服务可用': 'Service available',
+    '服务状态': 'Service status',
+    '此页面仅展示发布者选择公开的当前指标。': 'This page shows only the current metrics selected by its publisher.',
+    '点击设备名称或“查看详情”，查看已公开的历史趋势。': 'Select a device name or View details to see the published historical trends.',
+    '默认只公开名称、在线状态、最近上报与 CPU、内存、磁盘占用。网络和历史需要单独开启，用户自己的完整采集不受影响。': 'Only name, online state, last report, CPU, memory and disk usage are public by default. Network and history require separate opt-in. Your full private collection is unchanged.',
+    '公开历史曲线': 'Publish historical charts',
+    '公开默认出口速率': 'Publish default-egress rates',
+    '分享设置必须为布尔值': 'Sharing options must be boolean.',
+    '此分享页未公开历史数据': 'This page does not publish historical data.',
     '默认出口按默认路由接口统计，可能包含同接口内网流量。内部分类为接口观测，不能当作去重后的内网总流量。网络历史仅展示已确认出口的数据。': 'Default egress counts default-route interfaces and may include LAN traffic on those interfaces. Internal classes are interface observations, not deduplicated LAN bandwidth. Network history includes only confirmed egress measurements.',
     '接口数量': 'Interface count',
     '累计发送': 'Transmitted bytes',

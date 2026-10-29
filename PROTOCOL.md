@@ -1,4 +1,4 @@
-# Public monitoring contract v1.3.0
+# Public monitoring contract v1.3.1
 
 [OpenAPI](server/openapi.json) describes browser, ingestion and public-status APIs.
 This receiver implements the existing v1.0 full report envelope; it has no Private
@@ -262,3 +262,26 @@ counts are ignored. New chunks (`wmh2_`) bind AES-GCM associated data to
 chunk touched by ingestion is rewritten with valid network samples only. Cache
 purposes change with the accounting policy; old high network values cannot mix
 with corrected default-egress curves, while old non-network history stays intact.
+
+## Anonymous publication privacy (v1.3.1)
+
+`PageWrite` adds independent booleans `show_network` and `show_history`, default
+false on create/update when omitted. Both columns default false, including
+migrated existing pages. Owner pages GET returns both flags. Owner complete
+reports, collectors, raw JSON and resource history remain unchanged.
+
+Anonymous snapshots include `visibility: {network,history}`. Default device fields
+are only name, online, last_seen, cpu_percent, memory_percent and disk_percent.
+Network rates/accounting_scope require show_network; history_key/history_ref
+require show_history. Both flags enter the shared-view cache fingerprint.
+
+Public history checks show_history on every request and rejects403 when disabled,
+including old refs and any range. Without network sharing, columns are
+`[time,cpu_percent,memory_percent,disk_percent]` and rows have exactly4 elements;
+network_accounting_scope is absent. With network sharing, the existing6-column
+shape is retained. Owner history always retains the full6-column form. Filtering
+runs after the shared encrypted cache and does not mutate the owner's view.
+
+`/api/platform-load` returns only available and, when current, collected_at.
+Cross-tenant counts, Redis/RSS, host load and performance counters are not public.
+No role system or Agent collection changes are introduced.

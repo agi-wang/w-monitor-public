@@ -5,6 +5,7 @@ const $ = (id) => document.getElementById(id);
 const publicSlug = /^\/status\/(wm1_[A-Za-z0-9_-]{40,320})$/.exec(location.pathname)?.[1];
 const responses = new Map();
 const historyViews = new Map();
+let publicVisibility = { network: false, history: false };
 let historyRequest = 0, historyLoading = false, historyLoadedAt = 0, historyLastSeen;
 let session, devices = [], pages = [], bootstrap = "", editingPage = null;
 let lastView, currentPage = 0, pollMs = 5000;
@@ -127,15 +128,16 @@ function networkRate(value) {
 }
 function drawDevices(target, rows, publicView = false) {
   if (!rows.length) { empty(target, publicView ? t("暂无公开设备") : t("等待第一台设备"), publicView ? t("发布者尚未选择设备，或设备已被移除。") : t("点击“接入设备”，在主机上运行 Lite Agent。首次上报后设备会出现在这里。")); return; }
+  const showNetwork = !publicView || publicVisibility.network, showDetails = !publicView || publicVisibility.history;
   const table = node("table", undefined, "device-table");
   const head = node("thead"), headRow = node("tr");
-  for (const label of [t("设备 / 最近上报"), t("状态"), "CPU", t("内存"), t("磁盘"), t("默认出口"), t("设备详情")]) headRow.append(node("th", label));
+  for (const label of [t("设备 / 最近上报"), t("状态"), "CPU", t("内存"), t("磁盘"), ...(showNetwork ? [t("默认出口")] : []), ...(showDetails ? [t("设备详情")] : [])]) headRow.append(node("th", label));
   head.append(headRow); table.append(head);
   const body = node("tbody");
   for (const device of rows) {
     const row = node("tr"), name = node("td");
     const openDetails = () => showReport(device, publicView);
-    name.append(button(device.name + " ↗", openDetails, "device-name device-link"), node("div", timeLabel(device.last_seen), "last-seen"));
+    name.append(showDetails ? button(device.name + " ↗", openDetails, "device-name device-link") : node("div", device.name, "device-name"), node("div", timeLabel(device.last_seen), "last-seen"));
     const state = node("td", undefined, "status-cell");
     const badge = node("span", undefined, `status${device.online ? "" : " offline"}`);
     badge.append(node("span", undefined, "dot"), document.createTextNode(device.online === true ? t("在线") : device.online === false ? t("离线") : t("暂无数据"))); state.append(badge);
@@ -150,8 +152,11 @@ function drawDevices(target, rows, publicView = false) {
       if (key === "cpu_percent" && history?.points.length > 1) cell.append(metricPlot(history.points, [key], [label], true, history));
       row.append(cell);
     }
+    if (showNetwork) {
     const traffic = node("td", undefined, "metric-cell"); traffic.dataset.label = t("默认出口");
     traffic.textContent = `↓ ${networkRate(device.network_rx_bps)} · ↑ ${networkRate(device.network_tx_bps)}`; row.append(traffic);
+    }
+    if (showDetails) {
     const cell = node("td", undefined, "actions-cell"), actions = node("div", undefined, "row-actions");
     actions.append(button(t("查看详情") + " →", openDetails, "details-button"));
     if (!publicView) {
@@ -161,6 +166,7 @@ function drawDevices(target, rows, publicView = false) {
       }, "danger"));
     }
     cell.append(actions); row.append(cell);
+    }
     body.append(row);
   }
   table.append(body); target.replaceChildren(table);
@@ -188,7 +194,7 @@ function drawPages() {
     }
     actions.append(button(t("编辑"), () => openPage(page)), button(page.enabled ? t("停用") : t("启用"), async () => {
       const available = new Set((await api("/api/device-options")).devices.map((device) => device.id));
-      await api("/api/pages/update", { id: page.id, title: page.title, enabled: !page.enabled, device_ids: page.selection.filter((id) => available.has(id)) }); await refreshPages();
+      await api("/api/pages/update", { id: page.id, title: page.title, enabled: !page.enabled, show_network: page.show_network, show_history: page.show_history, device_ids: page.selection.filter((id) => available.has(id)) }); await refreshPages();
     }), button(t("更换链接"), async () => {
       if (!confirm(t("更换后，原公开链接会立即失效。"))) return;
       await api("/api/pages/rotate", { id: page.id }); await refreshPages();
@@ -220,6 +226,15 @@ async function refresh() {
     if (data.page > 0 && data.page * data.page_size >= data.total) { currentPage = Math.max(0, Math.ceil(data.total / data.page_size) - 1); refreshAgain = true; return; }
     allowEvents = data.realtime === true;
     notice(data.data_available === false ? t("实时数据暂时不可用，已隐藏资源读数。空间与设备接入信息仍已保存。") : "");
+    if (publicSlug) {
+      const visibility = { network: data.visibility?.network === true, history: data.visibility?.history === true };
+      if (visibility.network !== publicVisibility.network || visibility.history !== publicVisibility.history) {
+        historyRequest += 1; historyLoading = false; historyViews.clear();
+        if ($("report-dialog").open) $("report-dialog").close();
+      }
+      publicVisibility = visibility;
+      $("public-details-hint").textContent = t(visibility.history ? "点击设备名称或“查看详情”，查看已公开的历史趋势。" : "此页面仅展示发布者选择公开的当前指标。");
+    }
     if (data === lastView) { if (reportDevice) void loadHistory(); return; }
     lastView = data;
     const rows = data.devices.map((device, index) => ({ ...device, viewKey: publicSlug ? device.history_key ?? JSON.stringify([currentPage, index, device.name]) : device.id }));
@@ -352,6 +367,7 @@ async function openPage(page = null) {
   const options = (await api("/api/device-options")).devices;
   editingPage = page; $("page-dialog-title").textContent = page ? t("编辑分享页") : t("新建分享页");
   $("page-title").value = page?.title ?? ""; $("page-enabled").checked = page ? Boolean(page.enabled) : true;
+  $("page-show-network").checked = page?.show_network === true; $("page-show-history").checked = page?.show_history === true;
   $("page-devices").replaceChildren(...options.map((device) => {
     const label = node("label"), input = node("input"); input.type = "checkbox"; input.value = device.id; input.checked = Boolean(page?.selection.includes(device.id));
     label.append(input, document.createTextNode(device.name)); return label;
@@ -363,7 +379,7 @@ const reportTitles = new Map(Object.entries({ system: "系统信息", cpu: "CPU 
 const reportLabels = new Map(Object.entries({ accounting_scope: "流量统计口径", accounting_version: "统计口径版本", default_route_interfaces: "默认出口接口", traffic_groups: "接口分类观测", traffic_class: "接口分类", egress: "默认出口", lan: "其他局域接口", loopback: "回环", container: "容器与网桥", tunnel: "隧道", unknown: "未分类", received_bytes_per_sec: "下行速率", transmitted_bytes_per_sec: "上行速率", received_bytes: "累计接收", transmitted_bytes: "累计发送", interface_count: "接口数量", hostname: "主机名称", os_name: "操作系统", os_version: "系统版本", kernel_version: "内核版本", architecture: "架构", uptime_seconds: "运行时长", uptime_secs: "运行时长", cpu_count: "CPU 核心", total_memory_bytes: "物理内存", usage_percent: "使用率", total_bytes: "总容量", used_bytes: "已用容量", available_bytes: "可用容量", swap_total_bytes: "交换区容量", swap_used_bytes: "已用交换区", swap_usage_percent: "交换区使用率", cores: "核心数", per_core: "每核心指标", core: "核心", brand: "型号", frequency_mhz: "频率", load_avg: "平均负载", one: "1 分钟", five: "5 分钟", fifteen: "15 分钟", disks: "磁盘列表", mount_point: "挂载点", file_system: "文件系统", processes: "进程列表", pid: "PID", name: "名称", cpu_usage: "CPU 使用率", memory_bytes: "内存占用", containers: "容器列表", status: "状态", available: "可用", reason: "原因", count: "数量", interfaces: "接口列表", address: "地址", local_addr: "本地地址", remote_addr: "远端地址", port: "端口", findings: "检查结果", severity: "级别", message: "详情", data: "数据", capabilities: "能力", agent_version: "Agent 版本", report_seq: "上报序号", expected_interval_ms: "上报间隔", timestamp: "采集时间", version: "协议版本", agent_id: "设备标识", os: "系统", arch: "架构", report_interval_ms: "完整上报间隔" }));
 let fullReport, reportDevice, reportCollector = "";
 async function loadHistory(force = false) {
-  if (!reportDevice || historyLoading) return;
+  if (!reportDevice || historyLoading || (publicSlug && !publicVisibility.history)) return;
   const selected = reportDevice, range = $("report-range").value, key = selected.viewKey + ":" + range;
   const previous = historyViews.get(key), refreshMs = previous?.refresh_ms ?? 3000;
   const changed = (previous?.resolution_seconds ?? 3) < 60 && historyLastSeen !== selected.last_seen;
@@ -374,10 +390,10 @@ async function loadHistory(force = false) {
     const path = publicSlug ? `/api/public/status/${publicSlug}/history?ref=${encodeURIComponent(selected.history_ref)}&range=${range}` : `/api/devices/${selected.id}/history?range=${range}`;
     const data = await api(path);
     if (request !== historyRequest || generation !== ownerGeneration || reportDevice?.viewKey !== selected.viewKey || $("report-range").value !== range) return;
-    const expected = ["time", "cpu_percent", "memory_percent", "disk_percent", "network_rx_bps", "network_tx_bps"];
+    const expected = ["time", "cpu_percent", "memory_percent", "disk_percent", ...(!publicSlug || publicVisibility.network ? ["network_rx_bps", "network_tx_bps"] : [])];
     if (JSON.stringify(data.columns) !== JSON.stringify(expected) || !Array.isArray(data.points) || data.points.length > 720 || !Number.isFinite(data.from) || !Number.isFinite(data.to) || data.to <= data.from || !Number.isInteger(data.resolution_seconds) || data.resolution_seconds < 1) throw new Error(t("历史数据格式无效"));
     const points = data.points.map(row => {
-      if (!Array.isArray(row) || row.length !== 6 || !Number.isFinite(row[0]) || row.slice(1).some(value => value !== null && (typeof value !== "number" || !Number.isFinite(value) || value < 0))) throw new Error(t("历史数据格式无效"));
+      if (!Array.isArray(row) || row.length !== expected.length || !Number.isFinite(row[0]) || row.slice(1).some(value => value !== null && (typeof value !== "number" || !Number.isFinite(value) || value < 0))) throw new Error(t("历史数据格式无效"));
       return Object.fromEntries(expected.map((field, index) => [field, row[index]]));
     });
     historyViews.delete(key); historyViews.set(key, { ...data, points });
@@ -395,6 +411,7 @@ async function loadHistory(force = false) {
 function drawHistory() {
   const history = historyViews.get(reportDevice?.viewKey + ":" + $("report-range").value), points = history?.points ?? [], charts = $("report-charts"); charts.replaceChildren();
   for (const [title, keys, labels] of [["CPU", ["cpu_percent"], ["CPU"]], [t("内存"), ["memory_percent"], [t("内存")]], [t("磁盘"), ["disk_percent"], [t("磁盘")]], [t("默认出口"), ["network_rx_bps", "network_tx_bps"], [t("下载"), t("上传")]]]) {
+    if (publicSlug && !publicVisibility.network && keys.includes("network_rx_bps")) continue;
     const card = node("section", undefined, "metric-chart"), heading = node("div", undefined, "chart-heading"); heading.append(node("h3", title));
     if (keys.length > 1) { const legend = node("span", undefined, "chart-legend"); labels.forEach((label, index) => legend.append(node("span", label, `chart-series-${index}`))); heading.append(legend); }
     card.append(heading, metricPlot(points, keys, labels, false, history)); charts.append(card);
@@ -467,12 +484,15 @@ function reportMetric(value, key = "") {
   return box;
 }
 function updateReportLiveMetrics(device) {
-  const box = $("report-live"); box.replaceChildren();
+  const box = $("report-live"); box.replaceChildren(); box.classList.toggle("without-network", Boolean(publicSlug && !publicVisibility.network));
   const online = device?.online === true;
   for (const [label, key] of [["CPU", "cpu_percent"], [t("内存"), "memory_percent"], [t("磁盘"), "disk_percent"]]) {
     const item = node("div"), value = device?.[key]; item.append(node("span", label), node("strong", online && typeof value === "number" ? `${value.toFixed(1)}%` : "—")); box.append(item);
   }
+  $("report-network-note").hidden = Boolean(publicSlug && !publicVisibility.network);
+  if (!publicSlug || publicVisibility.network) {
   const network = node("div"); network.append(node("span", t("默认出口")), node("strong", online ? `↓ ${networkRate(device.network_rx_bps)} · ↑ ${networkRate(device.network_tx_bps)}` : "—")); box.append(network);
+  }
   $("report-live-status").textContent = `${t(online ? "在线" : "暂无实时数据")} · ${t("最近上报")} ${timeLabel(device?.last_seen)}`;
   drawHistory();
 }
@@ -552,6 +572,7 @@ function drawFullReport() {
 }
 
 async function showReport(device, publicView = false) {
+  if (publicView && !publicVisibility.history) return;
   historyRequest += 1; historyLoading = false; historyLoadedAt = 0; historyLastSeen = undefined;
   reportDevice = device; fullReport = undefined; reportCollector = ""; updateReportLiveMetrics(device);
   $("report-title").textContent = device.name;
@@ -658,7 +679,7 @@ $("unbind-email").onclick = () => run(async () => {
   await api("/api/email/unbind", {}); await refreshEmail();
 });
 $("page-form").onsubmit = (event) => { event.preventDefault(); void run(async () => {
-  const value = { title: $("page-title").value.trim(), enabled: $("page-enabled").checked, device_ids: [...$("page-devices").querySelectorAll("input:checked")].map((input) => input.value) };
+  const value = { title: $("page-title").value.trim(), enabled: $("page-enabled").checked, show_network: $("page-show-network").checked, show_history: $("page-show-history").checked, device_ids: [...$("page-devices").querySelectorAll("input:checked")].map((input) => input.value) };
   if (editingPage) value.id = editingPage.id;
   await api(editingPage ? "/api/pages/update" : "/api/pages/create", value); $("page-dialog").close(); await refreshPages();
 }); };
@@ -674,24 +695,16 @@ for (const id of ["devices-tab", "pages-tab"]) $(id).onkeydown = (event) => {
 document.addEventListener("visibilitychange", () => { if (document.hidden) stopRealtime(); else { if (publicSlug || session?.space) void refresh(); startRealtime(); } });
 window.addEventListener("pagehide", stopRealtime);
 async function refreshPlatformLoad() {
+  if (publicSlug) return;
   try {
     const data = await api("/api/platform-load");
-    if (!data.available) throw new Error();
-    const format = (value, suffix = "") => typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(value) + suffix : "—";
-    $("load-devices").textContent = `${data.online_devices} / ${data.devices}`;
-    $("load-rps").textContent = format(data.requests_per_second);
-    $("load-latency").textContent = format(data.mean_response_ms, " ms");
-    $("load-errors").textContent = format(data.server_error_percent, "%");
-    $("load-redis").textContent = format(data.redis_used_bytes / 1048576, " MiB");
-    $("load-host").textContent = format(data.host_load?.[0]);
-    $("load-stamp").textContent = t("更新于 {time} · 展示上一完整分钟；系统负载来自共享宿主机，并非本账号 CPU 占用。", { time: timeLabel(data.collected_at) });
-  } catch {
-    for (const id of ["load-devices", "load-rps", "load-latency", "load-errors", "load-redis", "load-host"]) $(id).textContent = "—";
-    $("load-stamp").textContent = t("等待统计。系统负载来自共享宿主机，不代表本账号 CPU 占用。");
-  }
+    $("load-status").textContent = t(data.available ? "服务可用" : "等待服务状态");
+    $("load-stamp").textContent = data.collected_at ? t("状态更新于 {time}", { time: timeLabel(data.collected_at) }) : "";
+  } catch { $("load-status").textContent = t("服务状态暂不可用"); $("load-stamp").textContent = ""; }
 }
-void refreshPlatformLoad();
-const platformPoll = setInterval(() => { if (!document.hidden) void refreshPlatformLoad(); }, 60000);
+$("platform-status").hidden = Boolean(publicSlug);
+if (!publicSlug) void refreshPlatformLoad();
+const platformPoll = setInterval(() => { if (!publicSlug && !document.hidden) void refreshPlatformLoad(); }, 60000);
 window.addEventListener("pagehide", () => clearInterval(platformPoll));
 void run(async () => {
   if (publicSlug) { $("loading").hidden = true; $("public-page").hidden = false; await refresh(); startRealtime(); }

@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.3.0**; the release series starts at **v1.0.0**.
+The current release is **v1.3.1**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -117,8 +117,9 @@ installed Agent to upgrade itself.
 - Use an anonymous space with a private recovery key, or claim it through normal
   OAuth login. Claiming a space does not grant host-control permissions.
 - Create multiple public pages and choose which of your devices each page shows.
-- Visitors see names, online status, CPU, memory, disk usage, and aggregate network
-  rates. IP addresses, process details, inventory, and full reports stay private.
+- Visitors see names, online state, last report, CPU, memory and disk by default.
+  Owners opt each page into default-egress rates and historical charts separately.
+  IP addresses, process details, inventory and complete reports stay private.
 - Bind a verified identity email and opt in to offline/recovery notifications when
   the receiver has an SMTP transport configured.
 - The interface and API messages support English and Simplified Chinese, selected
@@ -288,10 +289,10 @@ Public pages continue to use their deliberately limited projection.
 
 ### Device entrypoints and live trends
 
-Select a device name or **View details** in either the public sharing page or
-the private device list. Both show CPU, memory, disk and receive/transmit charts;
-the public dialog uses only the already-published scalar metrics and never fetches
-a private report. The device list also shows a CPU sparkline. Private details
+Select a device name or **View details** in the private device list to see full
+collector data and resource charts. Public sharing pages expose that entry only
+when the owner enables history; network values/charts require a separate network
+opt-in. The public dialog never fetches a private report. The device list also shows a CPU sparkline. Private details
 retain all collector sections and an explicit full-snapshot refresh button.
 
 Historical curves are read from the receiver's Redis, so page reloads and other
@@ -335,8 +336,10 @@ views; fine views are also invalidated by incoming reports. Queries return at mo
 Only the selected device's history is fetched. No per-point Redis keys, global
 history scans, background per-viewer collectors or RedisTimeSeries dependency.
 
-Public history requires the current enabled page, a page-bound encrypted routing
-reference and current device selection. Its stable `history_key` is a page-specific
+Public history requires the current enabled page with history explicitly enabled,
+a page-bound encrypted routing reference and current device selection. Without
+network sharing, network columns and values are removed server-side, even for
+previously issued references or cached full history. Its stable `history_key` is a page-specific
 pseudonym, never a private device ID. Private history requires owner session and
 operation token. Removing a device deletes its indexed chunks and response caches;
 disabling/rotating a page immediately prevents new historical reads. Historical
@@ -358,3 +361,22 @@ as egress. Historical CPU/memory/disk are preserved; old ambiguous network point
 become gaps rather than zeros. Corrected egress history begins with newly
 identified egress samples; old per-interface traffic cannot be retroactively
 reconstructed into destination-classified Internet bandwidth. See PROTOCOL.md for accounting v2 fields/migration.
+
+### Anonymous sharing defaults (v1.3.1)
+
+This restricts anonymous sharing, not the Public owner's access to their devices.
+Owner full snapshots, raw JSON downloads, all collectors and full resource history
+remain available with the same ownership checks. Agent collection is unchanged.
+
+Each page stores `show_network` and `show_history`, both false by default. Existing
+pages migrate to false as well; owners can enable either checkbox independently.
+Page-write requests that omit a flag default it to false. Anonymous snapshots
+include `visibility: {network, history}`; network values/accounting metadata only
+appear with network sharing, and opaque history refs only with history sharing.
+Changing a flag invalidates the cached public projection immediately. Historical
+authorization is checked before each read, regardless of requested range/ref.
+
+The anonymous `/api/platform-load` response contains only coarse availability and
+a collection timestamp. It never returns platform tenant/device counts, Redis
+memory, host load, request rates or internal performance metrics. Sharing pages
+hide the platform-status section; the home page shows coarse service status.
