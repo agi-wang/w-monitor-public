@@ -25,7 +25,7 @@ from redis_cache import RedisCache, MetricHistory
 from encryption import SealedData, verify_signature
 from i18n import EN, language, render_html, translate
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 SOURCE_RELEASE = Path(__file__).resolve().parents[1].name
 MAX_BODY = 8 * 1024 * 1024
 WEB = Path(__file__).resolve().parent / "web"
@@ -158,7 +158,8 @@ with database() as _db:
       slug_hash TEXT UNIQUE NOT NULL, slug_ciphertext TEXT NOT NULL,
       title TEXT NOT NULL, enabled INTEGER NOT NULL,
       selection TEXT NOT NULL,
-      show_network INTEGER NOT NULL DEFAULT 0, show_history INTEGER NOT NULL DEFAULT 0);
+      show_network INTEGER NOT NULL DEFAULT 0, show_history INTEGER NOT NULL DEFAULT 0,
+      show_cpu INTEGER NOT NULL DEFAULT 1, show_memory INTEGER NOT NULL DEFAULT 1, show_disk INTEGER NOT NULL DEFAULT 1);
     CREATE INDEX IF NOT EXISTS page_space ON pages(space_id);
     CREATE TABLE IF NOT EXISTS notification_state(
       device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
@@ -175,9 +176,9 @@ with database() as _db:
     """)
     _db.execute("BEGIN IMMEDIATE")
     _page_columns = {row[1] for row in _db.execute("PRAGMA table_info(pages)")}
-    for _column in ("show_network", "show_history"):
+    for _column, _default in (("show_network", 0), ("show_history", 0), ("show_cpu", 1), ("show_memory", 1), ("show_disk", 1)):
         if _column not in _page_columns:
-            _db.execute("ALTER TABLE pages ADD COLUMN " + _column + " INTEGER NOT NULL DEFAULT 0")
+            _db.execute("ALTER TABLE pages ADD COLUMN " + _column + " INTEGER NOT NULL DEFAULT " + str(_default))
     _db.commit()
 
 
@@ -475,7 +476,7 @@ def offline_after(meta):
     return max(OFFLINE_GRACE / 1000, expected / 1000 * 2.1)
 
 
-def projection(row, meta=None, public=False, available=True, page_id=None, show_network=True, show_history=True):
+def projection(row, meta=None, public=False, available=True, page_id=None, show_network=True, show_history=True, show_cpu=True, show_memory=True, show_disk=True):
     received = meta.get("received_at") if isinstance(meta, dict) else None
     online = received >= time.time() - offline_after(meta) if type(received) is int else None
     result = {"name": meta.get("name", row["name"]) if isinstance(meta, dict) else row["name"], "online": online, "last_seen": received, "data_status": "available" if received else "awaiting_report" if available else "unavailable", "cpu_percent": meta.get("cpu") if online else None, "memory_percent": meta.get("memory") if online else None, "disk_percent": meta.get("disk") if online else None, "network_rx_bps": meta.get("network_rx_bps") if online and meta.get("network_accounting_version") == 2 else None, "network_tx_bps": meta.get("network_tx_bps") if online and meta.get("network_accounting_version") == 2 else None}
@@ -485,6 +486,9 @@ def projection(row, meta=None, public=False, available=True, page_id=None, show_
         result["agent_id"] = row["agent_id"]
     else:
         result.pop("data_status", None)
+        for key, visible in (("cpu_percent", show_cpu), ("memory_percent", show_memory), ("disk_percent", show_disk)):
+            if not visible:
+                result.pop(key, None)
         if not show_network:
             for key in ("network_rx_bps", "network_tx_bps", "network_accounting_scope"):
                 result.pop(key, None)
@@ -530,7 +534,8 @@ def snapshot(db, space=None, slug=None, number=0):
     else:
         scope, title, space_id, revision = space["id"], space["title"], space["id"], space["revision"]
         selection_raw = None
-    visibility = {"network": bool(page["show_network"]) if slug else True, "history": bool(page["show_history"]) if slug else True}
+    visibility = {key: bool(page["show_" + key]) if slug else True for key in ("cpu", "memory", "disk", "network", "history")}
+    visibility["history"] = visibility["history"] and any(visibility[key] for key in ("cpu", "memory", "disk", "network"))
     key = NAMESPACE + "view:" + ("public:" if slug else "space:") + scope + ":" + str(number)
     cached_view = CACHE.read_view(DYNAMIC, key, space_id)
     # Short shared snapshots follow the configured realtime cadence. Per-report
@@ -551,7 +556,7 @@ def snapshot(db, space=None, slug=None, number=0):
     total = db.execute("SELECT count(*) FROM devices WHERE " + where, arguments).fetchone()[0]
     rows = db.execute("SELECT id,agent_id,name FROM devices WHERE " + where + " ORDER BY name,id LIMIT 100 OFFSET ?", [*arguments, number * 100]).fetchall()
     metadata, available = live_metadata(rows)
-    result = {"title": title, "devices": [projection(row, metadata.get(row["id"]), bool(slug), available, scope if slug else None, visibility["network"], visibility["history"]) for row in rows], "read_only": True, "realtime": CONFIG.get("enable_events") is True, "data_available": available, "page": number, "page_size": 100, "total": total, "refresh_ms": PAGE_REFRESH, "visibility": visibility}
+    result = {"title": title, "devices": [projection(row, metadata.get(row["id"]), bool(slug), available, scope if slug else None, visibility["network"], visibility["history"], visibility["cpu"], visibility["memory"], visibility["disk"]) for row in rows], "read_only": True, "realtime": CONFIG.get("enable_events") is True, "data_available": available, "page": number, "page_size": 100, "total": total, "refresh_ms": PAGE_REFRESH, "visibility": visibility}
     payload = json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()
     if available:
         CACHE.put(key, BOX.seal("view:" + digest(key), {"fingerprint": fingerprint, "snapshot": payload.decode()}), NAMESPACE + "views")
@@ -778,17 +783,18 @@ def route(db, environ):
         slug = path.split("/")[-2]
         page_id = link_payload("public", slug)
         selection, reference = history_query(environ, public=True)
-        page = db.execute("SELECT id,space_id,selection,show_network,show_history FROM pages WHERE id=? AND slug_hash=? AND enabled=1", (page_id, digest(slug))).fetchone()
+        page = db.execute("SELECT * FROM pages WHERE id=? AND slug_hash=? AND enabled=1", (page_id, digest(slug))).fetchone()
         if not page:
             raise Rejected(404, "此分享链接已停用或不存在")
-        if not page["show_history"]:
+        if not page["show_history"] or not any(page["show_" + key] for key in ("cpu", "memory", "disk", "network")):
             raise Rejected(403, "此分享页未公开历史数据")
         device = link_payload("history:" + page_id, reference)
         if not db.execute("SELECT id FROM devices WHERE id=? AND space_id=? AND id IN (SELECT value FROM json_each(?))", (device, page["space_id"], page["selection"])).fetchone():
             raise Rejected(404, "设备不存在")
         history = history_snapshot(device, selection)
+        indices = [0] + [index for index, key in enumerate(("cpu", "memory", "disk", "network", "network"), 1) if page["show_" + key]]
+        history = {**history, "columns": [history["columns"][index] for index in indices], "points": [[point[index] for index in indices] for point in history["points"]]}
         if not page["show_network"]:
-            history = {**history, "columns": history["columns"][:4], "points": [point[:4] for point in history["points"]]}
             history.pop("network_accounting_scope", None)
         return 200, history, []
     if method == "GET" and re.fullmatch(r"/api/public/status/" + LINK, path):
@@ -866,8 +872,8 @@ def route(db, environ):
     if method == "GET" and path == "/api/pages":
         space = current_space(db, session)
         operation_guard(environ, space)
-        rows = db.execute("SELECT id,title,slug_ciphertext,enabled,selection,show_network,show_history FROM pages WHERE space_id=? ORDER BY id", (space["id"],)).fetchall()
-        return 200, {"pages": [{"id": row["id"], "title": row["title"], "slug": BOX.open("stored-link:" + row["id"], row["slug_ciphertext"]), "enabled": bool(row["enabled"]), "selection": json.loads(row["selection"]), "show_network": bool(row["show_network"]), "show_history": bool(row["show_history"])} for row in rows]}, headers
+        rows = db.execute("SELECT * FROM pages WHERE space_id=? ORDER BY id", (space["id"],)).fetchall()
+        return 200, {"pages": [{"id": row["id"], "title": row["title"], "slug": BOX.open("stored-link:" + row["id"], row["slug_ciphertext"]), "enabled": bool(row["enabled"]), "selection": json.loads(row["selection"]), "show_network": bool(row["show_network"]), "show_history": bool(row["show_history"]), **{"show_" + key: bool(row["show_" + key]) for key in ("cpu", "memory", "disk")}} for row in rows]}, headers
     if method != "POST":
         raise Rejected(404, "接口不存在")
     write_guard(environ, session)
@@ -1064,12 +1070,12 @@ def route(db, environ):
         begin_browser_write(db, session, space["id"])
         if path == "/api/pages/create":
             page_id = secrets.token_hex(16)
-        elif not isinstance(page_id, str) or not db.execute("SELECT id FROM pages WHERE id=? AND space_id=?", (page_id, space["id"])).fetchone():
+        elif not isinstance(page_id, str) or not (existing_page := db.execute("SELECT * FROM pages WHERE id=? AND space_id=?", (page_id, space["id"])).fetchone()):
             raise Rejected(404, "分享页不存在")
         if path in ("/api/pages/create", "/api/pages/update"):
             title, selection, enabled = value.get("title"), value.get("device_ids"), value.get("enabled", True)
-            show_network, show_history = value.get("show_network", False), value.get("show_history", False)
-            if type(show_network) is not bool or type(show_history) is not bool:
+            flags = {"show_" + key: value.get("show_" + key, bool(existing_page["show_" + key]) if path.endswith("update") else key in ("cpu", "memory", "disk")) for key in ("cpu", "memory", "disk", "network", "history")}
+            if any(type(flag) is not bool for flag in flags.values()):
                 raise Rejected(400, "分享设置必须为布尔值")
             if not isinstance(title, str) or not 1 <= len(title.strip()) <= 80 or not isinstance(selection, list) or type(enabled) is not bool or any(not isinstance(item, str) for item in selection):
                 raise Rejected(400, "请填写名称并选择自己的设备")
@@ -1078,9 +1084,9 @@ def route(db, environ):
                 raise Rejected(403, "只能分享当前空间的设备")
             if path.endswith("create"):
                 token = BOX.seal("public", {"id": page_id})
-                db.execute("INSERT INTO pages(id,space_id,slug_hash,slug_ciphertext,title,enabled,selection,show_network,show_history) VALUES(?,?,?,?,?,?,?,?,?)", (page_id, space["id"], digest(token), BOX.seal("stored-link:" + page_id, token), title.strip(), int(enabled), json.dumps(selection), int(show_network), int(show_history)))
+                db.execute("INSERT INTO pages(id,space_id,slug_hash,slug_ciphertext,title,enabled,selection,show_network,show_history,show_cpu,show_memory,show_disk) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (page_id, space["id"], digest(token), BOX.seal("stored-link:" + page_id, token), title.strip(), int(enabled), json.dumps(selection), int(flags["show_network"]), int(flags["show_history"]), int(flags["show_cpu"]), int(flags["show_memory"]), int(flags["show_disk"])))
             else:
-                db.execute("UPDATE pages SET title=?,enabled=?,selection=?,show_network=?,show_history=? WHERE id=? AND space_id=?", (title.strip(), int(enabled), json.dumps(selection), int(show_network), int(show_history), page_id, space["id"]))
+                db.execute("UPDATE pages SET title=?,enabled=?,selection=?,show_network=?,show_history=?,show_cpu=?,show_memory=?,show_disk=? WHERE id=? AND space_id=?", (title.strip(), int(enabled), json.dumps(selection), int(flags["show_network"]), int(flags["show_history"]), int(flags["show_cpu"]), int(flags["show_memory"]), int(flags["show_disk"]), page_id, space["id"]))
         elif path == "/api/pages/rotate":
             token = BOX.seal("public", {"id": page_id})
             db.execute("UPDATE pages SET slug_hash=?,slug_ciphertext=? WHERE id=? AND space_id=?", (digest(token), BOX.seal("stored-link:" + page_id, token), page_id, space["id"]))

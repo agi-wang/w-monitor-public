@@ -1,4 +1,4 @@
-# Public monitoring contract v1.3.1
+# Public monitoring contract v1.3.2
 
 [OpenAPI](server/openapi.json) describes browser, ingestion and public-status APIs.
 This receiver implements the existing v1.0 full report envelope; it has no Private
@@ -266,22 +266,38 @@ with corrected default-egress curves, while old non-network history stays intact
 ## Anonymous publication privacy (v1.3.1)
 
 `PageWrite` adds independent booleans `show_network` and `show_history`, default
-false on create/update when omitted. Both columns default false, including
+false on create when omitted; updates preserve stored flags. Both columns default false, including
 migrated existing pages. Owner pages GET returns both flags. Owner complete
 reports, collectors, raw JSON and resource history remain unchanged.
 
-Anonymous snapshots include `visibility: {network,history}`. Default device fields
+Anonymous snapshots include visibility permissions (expanded in v1.3.2 below). Default device fields
 are only name, online, last_seen, cpu_percent, memory_percent and disk_percent.
 Network rates/accounting_scope require show_network; history_key/history_ref
 require show_history. Both flags enter the shared-view cache fingerprint.
 
 Public history checks show_history on every request and rejects403 when disabled,
-including old refs and any range. Without network sharing, columns are
-`[time,cpu_percent,memory_percent,disk_percent]` and rows have exactly4 elements;
-network_accounting_scope is absent. With network sharing, the existing6-column
-shape is retained. Owner history always retains the full6-column form. Filtering
+including old refs and any range. Columns and tuple values are filtered by the
+selected metrics (see v1.3.2 below); network_accounting_scope is absent without
+network sharing. Owner history always retains the full6-column form. Filtering
 runs after the shared encrypted cache and does not mutate the owner's view.
 
 `/api/platform-load` returns only available and, when current, collected_at.
 Cross-tenant counts, Redis/RSS, host load and performance counters are not public.
 No role system or Agent collection changes are introduced.
+
+### Selectable public columns (v1.3.2)
+
+Each page can independently publish CPU, memory and disk usage (`show_cpu`,
+`show_memory`, `show_disk`, default true), default-egress rates (`show_network`,
+default false) and historical charts (`show_history`, default false). Name, online
+state and last-report time remain visible. Existing pages keep their basic metrics.
+Page creation uses these defaults; updates preserve omitted visibility settings.
+The owner page form exposes these choices. Sensitive details, interface addresses,
+processes and raw reports have no public option and remain owner-only.
+
+The server omits disabled snapshot fields and filters both history columns and
+point values, including cached responses and old references. History uses only
+selected metrics in canonical time/CPU/memory/disk/network-rx/network-tx order.
+With every metric disabled, effective history is off and the public history API
+returns 403. `visibility` includes cpu/memory/disk/network/history and invalidates
+view caches on changes. Owner full reports and six-column history remain intact.

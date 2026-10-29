@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "W Monitor Public API",
-    "version": "1.3.1",
+    "version": "1.3.2",
     "description": "Independent read-only telemetry receiver. No host-control APIs, update executors or private W Monitor dependencies. Recovery and registration secrets are shown once and persisted only as SHA-256 digests. Monitoring-space management does not operate monitored hosts. Dynamic telemetry lives only in encrypted Redis; SQLite holds durable user/space metadata, credential digests and notification delivery bookkeeping. Missing Redis is unknown, never a SQLite telemetry fallback. AES-GCM addresses are purpose-bound and never replace authentication. The backend negotiates zh-CN/en with Accept-Language and returns Content-Language; unsupported languages fall back to en. User/host text is preserved."
   },
   "servers": [
@@ -159,7 +159,7 @@
                 }
               },
               "additionalProperties": true,
-              "description": "Anonymous pages default to name/online/last_seen/CPU/memory/disk only. Network fields and history references depend on page visibility."
+              "description": "Anonymous pages always expose name/online/last_seen. Metric fields and history references are omitted unless enabled for this page. Owner data is unchanged."
             }
           },
           "data_available": {
@@ -184,10 +184,22 @@
           "visibility": {
             "type": "object",
             "required": [
+              "cpu",
+              "memory",
+              "disk",
               "network",
               "history"
             ],
             "properties": {
+              "cpu": {
+                "type": "boolean"
+              },
+              "memory": {
+                "type": "boolean"
+              },
+              "disk": {
+                "type": "boolean"
+              },
               "network": {
                 "type": "boolean"
               },
@@ -195,7 +207,8 @@
                 "type": "boolean"
               }
             },
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "Effective publication permissions. History is false when no metric column is selected."
           }
         }
       },
@@ -228,12 +241,27 @@
           "show_network": {
             "type": "boolean",
             "default": false,
-            "description": "Explicitly publish default-egress rates on this page. Omitted means false."
+            "description": "Publish network on this page. Create defaults to false; updates preserve the stored value when omitted."
           },
           "show_history": {
             "type": "boolean",
             "default": false,
-            "description": "Explicitly publish resource history on this page. Omitted means false."
+            "description": "Publish history on this page. Create defaults to false; updates preserve the stored value when omitted."
+          },
+          "show_cpu": {
+            "type": "boolean",
+            "default": true,
+            "description": "Publish cpu on this page. Create defaults to true; updates preserve the stored value when omitted."
+          },
+          "show_memory": {
+            "type": "boolean",
+            "default": true,
+            "description": "Publish memory on this page. Create defaults to true; updates preserve the stored value when omitted."
+          },
+          "show_disk": {
+            "type": "boolean",
+            "default": true,
+            "description": "Publish disk on this page. Create defaults to true; updates preserve the stored value when omitted."
           }
         }
       },
@@ -511,107 +539,43 @@
         "properties": {
           "columns": {
             "type": "array",
-            "enum": [
-              [
-                "time",
-                "cpu_percent",
-                "memory_percent",
-                "disk_percent"
-              ],
-              [
-                "time",
+            "minItems": 2,
+            "maxItems": 6,
+            "uniqueItems": true,
+            "prefixItems": [
+              {
+                "const": "time"
+              }
+            ],
+            "items": {
+              "enum": [
                 "cpu_percent",
                 "memory_percent",
                 "disk_percent",
                 "network_rx_bps",
                 "network_tx_bps"
               ]
-            ]
+            }
           },
           "points": {
             "type": "array",
             "maxItems": 720,
             "items": {
-              "oneOf": [
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 6,
+              "prefixItems": [
                 {
-                  "type": "array",
-                  "minItems": 4,
-                  "maxItems": 4,
-                  "prefixItems": [
-                    {
-                      "type": "integer"
-                    },
-                    {
-                      "type": [
-                        "number",
-                        "null"
-                      ],
-                      "minimum": 0
-                    },
-                    {
-                      "type": [
-                        "number",
-                        "null"
-                      ],
-                      "minimum": 0
-                    },
-                    {
-                      "type": [
-                        "number",
-                        "null"
-                      ],
-                      "minimum": 0
-                    }
-                  ],
-                  "items": false
-                },
-                {
-                  "type": "array",
-                  "minItems": 6,
-                  "maxItems": 6,
-                  "prefixItems": [
-                    {
-                      "type": "integer"
-                    },
-                    {
-                      "type": [
-                        "number",
-                        "null"
-                      ],
-                      "minimum": 0
-                    },
-                    {
-                      "type": [
-                        "number",
-                        "null"
-                      ],
-                      "minimum": 0
-                    },
-                    {
-                      "type": [
-                        "number",
-                        "null"
-                      ],
-                      "minimum": 0
-                    },
-                    {
-                      "type": [
-                        "number",
-                        "null"
-                      ],
-                      "minimum": 0
-                    },
-                    {
-                      "type": [
-                        "number",
-                        "null"
-                      ],
-                      "minimum": 0
-                    }
-                  ],
-                  "items": false
+                  "type": "integer"
                 }
-              ]
+              ],
+              "items": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              }
             }
           },
           "from": {
@@ -651,7 +615,7 @@
           }
         },
         "additionalProperties": true,
-        "description": "Publication history; four columns without network sharing, six with network sharing. History must be explicitly enabled."
+        "description": "Selected public metrics only, in canonical time/CPU/memory/disk/network-rx/network-tx order. Time is fixed; unselected columns and values are omitted. History requires opt-in and at least one selected metric. Each point length matches columns."
       }
     }
   },
@@ -1818,7 +1782,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Owned pages include boolean show_network/show_history flags. Existing pages migrate to false."
+            "description": "Owned pages include show_cpu/show_memory/show_disk (default true) and show_network/show_history (default false). Updates preserve omitted flags."
           },
           "400": {
             "description": "Invalid bounded request"
@@ -3113,7 +3077,7 @@
             "description": "Historical storage unavailable or corrupt"
           }
         },
-        "description": "Rechecks page enabled/selection/show_history on every request. show_network=false removes network values even from cached data and old refs."
+        "description": "Rechecks page enabled, device selection and all visibility flags on every request. Disabled metric columns and tuple values are removed even from cached data and old refs. History requires opt-in and at least one enabled metric."
       }
     }
   }

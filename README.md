@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.3.1**; the release series starts at **v1.0.0**.
+The current release is **v1.3.2**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -370,8 +370,8 @@ remain available with the same ownership checks. Agent collection is unchanged.
 
 Each page stores `show_network` and `show_history`, both false by default. Existing
 pages migrate to false as well; owners can enable either checkbox independently.
-Page-write requests that omit a flag default it to false. Anonymous snapshots
-include `visibility: {network, history}`; network values/accounting metadata only
+Creation defaults to false; updates preserve omitted flags. Anonymous snapshots
+include visibility permissions (see v1.3.2 below); network values/accounting metadata only
 appear with network sharing, and opaque history refs only with history sharing.
 Changing a flag invalidates the cached public projection immediately. Historical
 authorization is checked before each read, regardless of requested range/ref.
@@ -380,3 +380,20 @@ The anonymous `/api/platform-load` response contains only coarse availability an
 a collection timestamp. It never returns platform tenant/device counts, Redis
 memory, host load, request rates or internal performance metrics. Sharing pages
 hide the platform-status section; the home page shows coarse service status.
+
+### Selectable public columns (v1.3.2)
+
+Each page can independently publish CPU, memory and disk usage (`show_cpu`,
+`show_memory`, `show_disk`, default true), default-egress rates (`show_network`,
+default false) and historical charts (`show_history`, default false). Name, online
+state and last-report time remain visible. Existing pages keep their basic metrics.
+Page creation uses these defaults; updates preserve omitted visibility settings.
+The owner page form exposes these choices. Sensitive details, interface addresses,
+processes and raw reports have no public option and remain owner-only.
+
+The server omits disabled snapshot fields and filters both history columns and
+point values, including cached responses and old references. History uses only
+selected metrics in canonical time/CPU/memory/disk/network-rx/network-tx order.
+With every metric disabled, effective history is off and the public history API
+returns 403. `visibility` includes cpu/memory/disk/network/history and invalidates
+view caches on changes. Owner full reports and six-column history remain intact.

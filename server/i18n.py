@@ -3,6 +3,11 @@ import html
 import re
 
 EN = {
+    '公开栏目': 'Public columns',
+    '公开 CPU 占用': 'Publish CPU usage',
+    '公开内存占用': 'Publish memory usage',
+    '公开磁盘占用': 'Publish disk usage',
+    '名称、在线状态和最近上报始终公开。基础指标可分别勾选，网络和历史默认关闭；历史仅包含选中的指标，完整采集仅自己可见。': 'Name, online state and last report are always public. Select basic metrics separately; network and history are off by default. History includes selected metrics only. Full collection remains private.',
     '服务状态暂不可用': 'Service status is temporarily unavailable',
     '状态更新于 {time}': 'Status updated at {time}',
     '等待服务状态': 'Waiting for service status',
@@ -10,7 +15,6 @@ EN = {
     '服务状态': 'Service status',
     '此页面仅展示发布者选择公开的当前指标。': 'This page shows only the current metrics selected by its publisher.',
     '点击设备名称或“查看详情”，查看已公开的历史趋势。': 'Select a device name or View details to see the published historical trends.',
-    '默认只公开名称、在线状态、最近上报与 CPU、内存、磁盘占用。网络和历史需要单独开启，用户自己的完整采集不受影响。': 'Only name, online state, last report, CPU, memory and disk usage are public by default. Network and history require separate opt-in. Your full private collection is unchanged.',
     '公开历史曲线': 'Publish historical charts',
     '公开默认出口速率': 'Publish default-egress rates',
     '分享设置必须为布尔值': 'Sharing options must be boolean.',
