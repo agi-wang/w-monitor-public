@@ -476,9 +476,40 @@ async fn main() -> Result<()> {
                 if value["endpoint_url"].as_str()
                     != Some(format!("{}/api/v1/report", origin.trim_end_matches('/')).as_str())
                 {
-                    bail!(
-                        "Existing device belongs to another receiver; use a separate --config path"
+                    let target = url::Url::parse(origin)?;
+                    let receiver = target.origin().ascii_serialization();
+                    let existing = value["endpoint_url"]
+                        .as_str()
+                        .and_then(|s| url::Url::parse(s).ok())
+                        .map(|url| url.origin().ascii_serialization())
+                        .unwrap_or_else(|| "(invalid endpoint_url)".to_owned());
+                    let host = target.host_str().unwrap_or("receiver").replace(':', "_");
+                    let suffix = target.port().map(|p| format!("-{p}")).unwrap_or_default();
+                    let separate = parent
+                        .join("receivers")
+                        .join(format!("{host}{suffix}"))
+                        .join("agent.json");
+                    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+                    let mut command = format!(
+                        "{} --public {} --config {} --language {}",
+                        quote(&std::env::current_exe()?.to_string_lossy()),
+                        quote(origin),
+                        quote(&separate.to_string_lossy()),
+                        quote(&args.language)
                     );
+                    for (enabled, flag) in [
+                        (args.no_realtime, "--no-realtime"),
+                        (args.no_compression, "--no-compression"),
+                    ] {
+                        if enabled {
+                            command.push(' ');
+                            command.push_str(flag);
+                        }
+                    }
+                    if args.language == "zh-CN" {
+                        bail!("此配置已绑定其他接收端，原设备凭据已保留。\n配置文件 (--config): {:?}\n当前接收端: {existing}\n请求接收端 (--public): {receiver}\n接入新节点请使用独立配置文件，执行：\n{command}", args.config);
+                    }
+                    bail!("Existing device belongs to another receiver; its credentials were preserved.\nConfig file (--config): {:?}\nCurrent receiver: {existing}\nRequested receiver (--public): {receiver}\nUse a separate config to join this node:\n{command}", args.config);
                 }
                 value
             }
@@ -549,6 +580,7 @@ async fn main() -> Result<()> {
         use std::os::unix::process::CommandExt;
         let mut command = std::process::Command::new(std::env::current_exe()?);
         command.arg("--config").arg(&args.config);
+        command.arg("--language").arg(&args.language);
         if args.allow_local_http {
             command.arg("--allow-local-http");
         }
@@ -618,6 +650,11 @@ async fn main() -> Result<()> {
         config["compress_reports"].as_bool().unwrap_or(false) && !args.no_compression;
     let mut realtime_metrics =
         config["realtime_metrics"].as_bool().unwrap_or(true) && !args.no_realtime;
+    if args.language == "zh-CN" {
+        println!("配置文件 (--config): {:?}\n上报地址 (--endpoint / --public): {endpoint}\n设备 ID: {}\n完整报告间隔 (interval): {interval_ms} ms\n实时采样 (realtime_metrics / --no-realtime): {realtime_metrics}\n压缩 (compress_reports / --no-compression): {compress_reports}\n运行模式: 只读采集；更新须在本机手动执行", args.config, identity.agent_id);
+    } else {
+        println!("Config file (--config): {:?}\nReport URL (--endpoint / --public): {endpoint}\nDevice ID: {}\nFull report interval (interval): {interval_ms} ms\nRealtime samples (realtime_metrics / --no-realtime): {realtime_metrics}\nCompression (compress_reports / --no-compression): {compress_reports}\nMode: read-only collection; updates require a local operator", args.config, identity.agent_id);
+    }
     let mut applied_revision = config["remote_config_revision"].as_str().map(str::to_owned);
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
@@ -920,6 +957,10 @@ async fn main() -> Result<()> {
                 }
                 info!(
                     collectors = report.collectors.len(),
+                    full_report_interval_ms = interval_ms,
+                    realtime_metrics,
+                    realtime_interval_ms = metrics_ms,
+                    compress_reports,
                     "Read-only report delivered"
                 );
             }

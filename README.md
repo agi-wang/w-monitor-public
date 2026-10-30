@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.3.6**; the release series starts at **v1.0.0**.
+The current release is **v1.3.7**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -129,6 +129,27 @@ The Lite Agent keeps permitted read-only collection within its OS user's
 permissions. It has no remote terminal, remote file-control endpoint, privilege
 escalation, or self-update implementation. Read-only reports can still contain
 sensitive host metadata; choose a receiver you trust.
+
+### Startup configuration and regional identity
+
+At startup the Agent prints the selected `--config` path, report URL, device ID,
+full-report interval, realtime and compression switches. Successful reports also
+log the effective cadence and switches returned by the receiver. Authentication
+tokens and signing private keys are not printed. `--language zh-CN` selects Chinese
+startup and receiver-conflict messages.
+
+A device configuration belongs to one receiver. Reusing it with another `--public`
+origin preserves the original credentials and stops with both receiver origins,
+the selected config path, and a complete command using a separate per-receiver
+config. For example:
+
+```bash
+w-monitor-lite --public https://wm-uk.myfastools.com --language zh-CN \
+  --config "$HOME/.config/w-monitor-public/receivers/wm-uk.myfastools.com/agent.json"
+```
+
+The separate path creates or resumes that node's device and page. The existing
+receiver's configuration remains available for its own process.
 
 ## Architecture
 
