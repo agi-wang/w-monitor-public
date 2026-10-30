@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "W Monitor Public API",
-    "version": "1.3.9",
+    "version": "1.4.0",
     "description": "Independent read-only telemetry receiver. No host-control APIs, update executors or private W Monitor dependencies. Recovery and registration secrets are shown once and persisted only as SHA-256 digests. Monitoring-space management does not operate monitored hosts. Dynamic telemetry lives only in encrypted Redis; SQLite holds durable user/space metadata, credential digests and notification delivery bookkeeping. Missing Redis is unknown, never a SQLite telemetry fallback. AES-GCM addresses are purpose-bound and never replace authentication. The backend negotiates zh-CN/en with Accept-Language and returns Content-Language; unsupported languages fall back to en. User/host text is preserved."
   },
   "servers": [
@@ -66,6 +66,9 @@
               "metrics"
             ],
             "default": "full"
+          },
+          "service_probes": {
+            "$ref": "#/components/schemas/ServiceProbeReport"
           }
         },
         "additionalProperties": true
@@ -616,6 +619,177 @@
         },
         "additionalProperties": true,
         "description": "Selected public metrics only, in canonical time/CPU/memory/disk/network-rx/network-tx order. Time is fixed; unselected columns and values are omitted. History requires opt-in and at least one selected metric. Each point length matches columns."
+      },
+      "ServiceMonitorSettings": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "kind",
+          "target",
+          "interval_seconds",
+          "timeout_seconds"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "http",
+              "tcp"
+            ]
+          },
+          "target": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "Agent-local HTTP(S) URL or TCP host:port. No userinfo, query, fragment or control characters. Internal/loopback targets allowed only on a locally opted-in probe."
+          },
+          "interval_seconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 3600
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          }
+        }
+      },
+      "ServiceProbe": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "target",
+          "interval_seconds",
+          "timeout_seconds",
+          "id"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "http",
+              "tcp"
+            ]
+          },
+          "target": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "Agent-local HTTP(S) URL or TCP host:port. No userinfo, query, fragment or control characters. Internal/loopback targets allowed only on a locally opted-in probe."
+          },
+          "interval_seconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 3600
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$"
+          }
+        }
+      },
+      "ServiceProbeConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revision",
+          "probes"
+        ],
+        "properties": {
+          "revision": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{16}$"
+          },
+          "probes": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "$ref": "#/components/schemas/ServiceProbe"
+            }
+          }
+        },
+        "description": "Separate optional fixed configuration, at most 32 KiB. Returned only to signed Agents declaring telemetry.service_probes=true. It cannot enable local consent, run commands, change identity/receiver or update binaries."
+      },
+      "ServiceProbeReport": {
+        "type": "object",
+        "required": [
+          "revision",
+          "results"
+        ],
+        "properties": {
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "results": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "ok",
+                "status_code",
+                "latency_ms",
+                "error",
+                "age_seconds"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{32}$"
+                },
+                "ok": {
+                  "type": "boolean"
+                },
+                "status_code": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 100,
+                  "maximum": 599
+                },
+                "latency_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 10000
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "connection_or_tls",
+                    "timeout",
+                    null
+                  ]
+                },
+                "age_seconds": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Result age measured with Linux CLOCK_BOOTTIME, including suspend. Results older than 7200 seconds are ignored."
+                }
+              }
+            }
+          }
+        },
+        "additionalProperties": false
       }
     }
   },
@@ -2315,6 +2489,9 @@
                     },
                     "device_key_bound": {
                       "type": "boolean"
+                    },
+                    "service_probes": {
+                      "$ref": "#/components/schemas/ServiceProbeConfig"
                     }
                   }
                 }
@@ -3221,6 +3398,363 @@
             "description": "Authentication replay store unavailable"
           }
         }
+      }
+    },
+    "/api/devices/{id}/uptime": {
+      "get": {
+        "summary": "Read own device heartbeat availability and Agent-hosted service checks",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{32}$"
+            }
+          },
+          {
+            "name": "X-Operation-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "monitor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "default": "device"
+            },
+            "description": "device, or exact service monitor ID belonging to this device."
+          },
+          {
+            "name": "range",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "15m",
+                "1h",
+                "24h",
+                "7d",
+                "30d",
+                "all"
+              ],
+              "default": "24h"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "device_state",
+                    "monitors",
+                    "history",
+                    "events",
+                    "worker_available",
+                    "service_probes_enabled",
+                    "read_only"
+                  ],
+                  "properties": {
+                    "device_state": {
+                      "type": "string",
+                      "enum": [
+                        "up",
+                        "down",
+                        "unknown"
+                      ]
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "up",
+                        "down",
+                        "unknown"
+                      ]
+                    },
+                    "service_probes_enabled": {
+                      "type": "boolean"
+                    },
+                    "worker_available": {
+                      "type": "boolean"
+                    },
+                    "monitors": {
+                      "type": "array",
+                      "maxItems": 64,
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "history": {
+                      "type": "object",
+                      "description": "Encrypted Redis history: minute observations within one day, hourly aggregates beyond; availability_percent is weighted known observations, unknowns excluded, coverage_percent reports missing/unknown samples. Retention configurable 1-365 days, default30. At most720 points."
+                    },
+                    "events": {
+                      "type": "array",
+                      "maxItems": 20,
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "read_only": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          }
+        },
+        "description": "Owner-only; no anonymous endpoint, target or monitoring history is published. Offline/stale/pending probe or unavailable Redis is unknown for services, never automatically down. Collection does not backfill missing minutes or claim pre-feature history."
+      }
+    },
+    "/api/services/create": {
+      "post": {
+        "summary": "Create own Agent-hosted fixed service monitor",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-Operation-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "device_id",
+                  "settings"
+                ],
+                "properties": {
+                  "device_id": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{32}$"
+                  },
+                  "settings": {
+                    "$ref": "#/components/schemas/ServiceMonitorSettings"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok",
+                    "id"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{32}$"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          },
+          "409": {
+            "description": "Agent must be manually updated and locally opted in before creating checks."
+          }
+        },
+        "description": "Exact selected-space/device ownership, trusted Origin, CSRF and management operation token required. Targets encrypted at rest in SQLite; all dynamic results/events/history stay in Redis. Delete revokes configuration and stored history. Target changes require delete/create with a fresh ID."
+      }
+    },
+    "/api/services/delete": {
+      "post": {
+        "summary": "Delete own Agent-hosted fixed service monitor",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-Operation-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "device_id",
+                  "id"
+                ],
+                "properties": {
+                  "device_id": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{32}$"
+                  },
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{32}$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; privileged data and status reads are no-store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok",
+                    "id"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{32}$"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid bounded request"
+          },
+          "401": {
+            "description": "Missing/expired credential or invalid recovery key"
+          },
+          "403": {
+            "description": "Origin/CSRF/space ownership denied"
+          },
+          "429": {
+            "description": "Rate, storage or connection quota exhausted"
+          },
+          "503": {
+            "description": "Storage or deployment configuration unavailable"
+          },
+          "404": {
+            "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          },
+          "409": {
+            "description": "Agent must be manually updated and locally opted in before creating checks."
+          }
+        },
+        "description": "Exact selected-space/device ownership, trusted Origin, CSRF and management operation token required. Targets encrypted at rest in SQLite; all dynamic results/events/history stay in Redis. Delete revokes configuration and stored history. Target changes require delete/create with a fresh ID."
       }
     }
   }

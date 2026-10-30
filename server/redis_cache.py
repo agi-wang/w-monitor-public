@@ -209,6 +209,7 @@ class MetricHistory:
     (32 bytes before compression/encryption). Missing metrics have zero count.
     All levels consume original samples, never unweighted means of means.
     """
+    include_counts = False
     record = struct.Struct(">H5f5H")
     fields = ("cpu_percent", "memory_percent", "disk_percent", "network_rx_bps", "network_tx_bps")
     sources = ("cpu", "memory", "disk", "network_rx_bps", "network_tx_bps")
@@ -318,6 +319,8 @@ class MetricHistory:
         if len(points) > 720:
             raise ValueError("History response exceeds bound")
         result = {"columns": ["time", *self.fields], "points": points, "from": start, "to": now, "resolution_seconds": step, "retention_seconds": self.retention[tier], "max_retention_seconds": self.retention[2], "refresh_ms": 3000 if tier == 0 else 5000 if tier == 1 else 30000, "storage": "redis", "aggregation": "sample_weighted_mean", "network_accounting_scope": "default_route_interfaces"}
+        if self.include_counts:
+            result["sample_counts"] = [buckets[point[0]][1] for point in points]
         encoded = self.box.seal_report(purpose, result)
         # Prevent a slow reader from publishing a pre-ingest view after the writer
         # has invalidated it. Coarse views intentionally refresh less frequently.

@@ -8,6 +8,9 @@ import subprocess
 import sys
 
 private = Path(__file__).resolve().parent
+deploy_config = private / "deploy-config.json"
+if deploy_config.exists() and json.loads(deploy_config.read_text()).get("transport") == "unix-php":
+    os.execv(sys.executable, [sys.executable, str(private / "socket_gateway.py"), "supervise"])
 watchdog = private / "redis_watchdog.py"
 if watchdog.is_file() and not watchdog.is_symlink():
     subprocess.run([sys.executable, str(watchdog)], check=True, timeout=15)

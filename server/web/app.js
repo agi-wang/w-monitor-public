@@ -161,7 +161,7 @@ function drawDevices(target, rows, publicView = false) {
     const cell = node("td", undefined, "actions-cell"), actions = node("div", undefined, "row-actions");
     actions.append(button(t("查看详情") + " →", openDetails, "details-button"));
     if (!publicView) {
-      actions.append(button(t("Agent 配置"), () => showAgentSettings(device), ""), button(t("移除接入"), async () => {
+      actions.append(button(t("可用性监测"), () => showAvailability(device), ""), button(t("Agent 配置"), () => showAgentSettings(device), ""), button(t("移除接入"), async () => {
         if (!confirm(t("移除此设备的上报凭据和已存数据？这不会卸载或操作主机上的 Agent。"))) return;
         await api("/api/devices/revoke", { id: device.id }); await refresh();
       }, "danger"));
@@ -301,6 +301,7 @@ function startRealtime() {
   };
 }
 async function loadSession() {
+  if ($("uptime-dialog").open) $("uptime-dialog").close();
   generation += 1; stopRealtime(); responses.clear(); lastView = undefined; currentPage = 0;
   historyViews.clear(); if ($("report-dialog").open) $("report-dialog").close();
   session = await api("/api/session");
@@ -347,7 +348,7 @@ function showRecovery(key, rotated = false) {
 }
 function shellQuote(value) { return "'" + value.replaceAll("'", "'\"'\"'") + "'"; }
 function agentOptions(prefix) {
-  return (!$(`${prefix}-realtime`).checked ? " --no-realtime" : "") + (!$(`${prefix}-compression`).checked ? " --no-compression" : "");
+  return (!$(`${prefix}-realtime`).checked ? " --no-realtime" : "") + (!$(`${prefix}-compression`).checked ? " --no-compression" : "") + ($(`${prefix}-probes`).checked ? " --enable-service-probes" : "");
 }
 function installCommand() {
   if (!bootstrap) return "";
@@ -434,7 +435,7 @@ function metricPlot(points, keys, labels, small = false, history) {
   if (!small) {
     for (const fraction of [0, 0.5, 1]) {
       const level = y(maximum * fraction); element("line", { x1: left, x2: right, y1: level, y2: level, class: "chart-grid" });
-      element("text", { x: left - 8, y: level + 3, "text-anchor": "end", class: "chart-axis" }, keys[0].endsWith("percent") ? `${maximum * fraction}%` : networkRate(maximum * fraction));
+      element("text", { x: left - 8, y: level + 3, "text-anchor": "end", class: "chart-axis" }, keys[0].endsWith("percent") ? `${maximum * fraction}%` : keys[0] === "latency_ms" ? `${(maximum * fraction).toFixed(0)} ms` : networkRate(maximum * fraction));
     }
     const clock = time => new Date(time * 1000).toLocaleString(locale, { ...(end - start > 86400 ? { month: "2-digit", day: "2-digit" } : {}), hour12: false, hour: "2-digit", minute: "2-digit", ...((history?.resolution_seconds ?? 3) < 60 ? { second: "2-digit" } : {}) });
     element("text", { x: left, y: height - 6, class: "chart-axis" }, clock(start)); element("text", { x: right, y: height - 6, "text-anchor": "end", class: "chart-axis" }, clock(end));
@@ -670,7 +671,7 @@ $("copy-install").onclick = () => run(async () => {
     updateInstallCommand(); await copy($("install-command").value);
   } finally { button.disabled = false; }
 });
-for (const prefix of ["install", "quick"]) for (const option of ["realtime", "compression"]) {
+for (const prefix of ["install", "quick"]) for (const option of ["realtime", "compression", "probes"]) {
   $(`${prefix}-${option}`).onchange = prefix === "install" ? updateInstallCommand : updateQuickCommand;
 }
 $("new-page").onclick = () => run(() => openPage());
@@ -727,3 +728,56 @@ void run(async () => {
     if (selected && selected.origin !== location.origin) location.assign(selected.origin + "/");
   };
 });
+
+let uptimeDevice, uptimePoll, uptimeBusy = false;
+const availabilityLabel = state => t(state === "up" ? "可用" : state === "down" ? "不可用" : "未知");
+async function readAvailability() {
+  if (!uptimeDevice || uptimeBusy) return;
+  uptimeBusy = true;
+  const selectedDevice = uptimeDevice, selected = $("uptime-monitor").value, range = $("uptime-range").value, requestGeneration = generation;
+  try {
+    const data = await api(`/api/devices/${selectedDevice.id}/uptime?monitor=${encodeURIComponent(selected)}&range=${range}`);
+    if (uptimeDevice !== selectedDevice || generation !== requestGeneration || $("uptime-monitor").value !== selected || $("uptime-range").value !== range) return;
+    const options = [Object.assign(node("option", t("设备在线率")), {value:"device"}), ...data.monitors.map(m => Object.assign(node("option", m.name), {value:m.id}))];
+    $("uptime-monitor").replaceChildren(...options); $("uptime-monitor").value = selected;
+    $("uptime-status").textContent = t("当前状态") + ": " + availabilityLabel(data.state) + (data.state_since ? " · " + new Date(data.state_since * 1000).toLocaleString(locale) + " · " + t("持续约 {minutes} 分钟", {minutes:Math.max(0,Math.floor((Date.now()/1000-data.state_since)/60))}) : "");
+    const history = data.history, rate = history.availability_percent === null ? "—" : history.availability_percent.toFixed(3) + "%";
+    $("uptime-summary").textContent = t("已知采样可用率") + ": " + rate + " · " + t("覆盖率") + ": " + history.coverage_percent.toFixed(1) + "% · " + t("每分钟记录；缺失区间保留未知，超过 24 小时按小时聚合。") + (data.worker_available ? "" : " · " + t("历史记录任务尚未运行或已延迟。"));
+    const points = history.points.map(row => Object.fromEntries(history.columns.map((key, index) => [key, row[index]])));
+    $("uptime-charts").replaceChildren(...[["up_percent", "可用率"], ["latency_ms", "响应时间"]].map(([key,label]) => {
+      const card = node("section", undefined, "chart-card"); card.append(node("h3", t(label)), metricPlot(points, [key], [t(label)], false, history)); return card;
+    }));
+    $("uptime-events").replaceChildren(...data.events.map((event,index) => {
+      const ended = index > 0 && data.events[index-1].previous === event.state ? data.events[index-1].at : index === 0 && data.state === event.state && data.worker_available ? Date.now()/1000 : null;
+      const duration = event.state === "down" && ended !== null ? " · " + t("观测故障约 {minutes} 分钟", {minutes:Math.max(0,Math.floor((ended-event.at)/60))}) : "";
+      return node("p", new Date(event.at * 1000).toLocaleString(locale) + " · " + availabilityLabel(event.previous) + " → " + availabilityLabel(event.state) + duration);
+    }));
+    $("uptime-monitors").replaceChildren(...data.monitors.map(m => {
+      const reason = {timeout:"探测超时",connection_or_tls:"连接或 TLS 失败",probe_offline:"探针离线",configuration_pending:"等待配置",awaiting_check:"等待探测"}[m.reason];
+      const card = node("div", undefined, "settings-row"); card.append(node("span", `${m.name} · ${m.kind.toUpperCase()} · ${m.target} · ${availabilityLabel(m.state)}${typeof m.latency_ms === "number" ? " · " + m.latency_ms + " ms" : ""}${Number.isInteger(m.status_code) ? " · HTTP " + m.status_code : ""}${reason ? " · " + t(reason) : ""}`));
+      card.append(button(t("删除"), async () => { if (!confirm(t("删除此服务探测及其历史记录？"))) return; await api("/api/services/delete", {device_id:selectedDevice.id,id:m.id}); if ($("uptime-monitor").value === m.id) $("uptime-monitor").value = "device"; await readAvailability(); }, "quiet")); return card;
+    }));
+    $("uptime-create").disabled = !data.service_probes_enabled;
+    $("uptime-consent").textContent = data.service_probes_enabled ? t("此设备已允许服务探测；新配置在下次上报时接收。") : t("请在设备本机手动更新 Agent，并使用原配置加 --enable-service-probes 启动，允许作为服务探针。");
+  } catch(error) {
+    if (uptimeDevice === selectedDevice) {
+      $("uptime-status").textContent = error.message;
+      if (error.status === 404 && selected !== "device") $("uptime-monitor").value = "device";
+      else if (error.status === 404) $("uptime-dialog").close();
+    }
+  } finally { uptimeBusy = false; }
+}
+async function showAvailability(device) {
+  uptimeDevice = device; $("uptime-title").textContent = device.name;
+  $("uptime-monitor").replaceChildren(Object.assign(node("option", t("设备在线率")), {value:"device"}));
+  $("uptime-status").textContent = t("正在读取服务端历史…"); $("uptime-dialog").showModal();
+  await readAvailability(); if (uptimeDevice !== device || !$("uptime-dialog").open) return; clearInterval(uptimePoll); uptimePoll = setInterval(() => void readAvailability(), 5000);
+}
+$("uptime-dialog").addEventListener("close", () => { clearInterval(uptimePoll); uptimeDevice = undefined; $("uptime-monitors").replaceChildren(); $("uptime-charts").replaceChildren(); $("uptime-events").replaceChildren(); $("uptime-form").reset(); $("uptime-title").textContent = ""; $("uptime-summary").textContent = ""; });
+$("uptime-monitor").onchange = () => void readAvailability();
+$("uptime-range").onchange = () => void readAvailability();
+$("uptime-form").onsubmit = event => { event.preventDefault(); void run(async () => {
+  if (!uptimeDevice) return;
+  await api("/api/services/create", {device_id:uptimeDevice.id,settings:{name:$("uptime-name").value.trim(),kind:$("uptime-kind").value,target:$("uptime-target").value.trim(),interval_seconds:Number($("uptime-interval").value),timeout_seconds:Number($("uptime-timeout").value)}});
+  $("uptime-name").value = ""; $("uptime-target").value = ""; await readAvailability();
+}); };

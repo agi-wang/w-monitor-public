@@ -16,9 +16,11 @@ from app import BOX, CACHE, CONFIG, DATA, ORIGIN, database, live_metadata, offli
 
 
 def main():
+    from metrics import collect_uptime
+    availability = collect_uptime()
     required = ("smtp_host", "smtp_user", "smtp_password", "smtp_from")
     if not all(CONFIG.get(key) for key in required):
-        return {"configured": False}
+        return {"configured": False, "availability": availability}
     with open(DATA / "notifications.lock", "a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

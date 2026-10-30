@@ -176,6 +176,8 @@ jobs:
             environment: public-singapore-dapanel
           - region: fiber100
             environment: public-fiber100
+          - region: hostypanel-us1
+            environment: public-hostypanel-us1
     environment: ${{ matrix.environment }}
     concurrency:
       group: public-receiver-production-${{ matrix.region }}

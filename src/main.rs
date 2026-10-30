@@ -9,6 +9,7 @@ mod keys;
 mod network_diag;
 mod runtime_paths;
 mod security_advisories;
+mod service_probes;
 mod software_inventory;
 mod vps_pressure;
 
@@ -73,6 +74,9 @@ struct Args {
     /// Send reports without gzip compression.
     #[arg(long)]
     no_compression: bool,
+    /// Locally opt in to owner-configured, fixed read-only HTTP/TCP service checks.
+    #[arg(long)]
+    enable_service_probes: bool,
     /// Explicitly permit loopback HTTP for local development only.
     #[arg(long)]
     allow_local_http: bool,
@@ -152,6 +156,10 @@ fn persist_config(path: &Path, expected: &str, next: &str, id: &str) -> Result<(
 }
 
 fn write_config(path: &Path, value: &Value) -> Result<()> {
+    let encoded = serde_json::to_vec_pretty(value)?;
+    if encoded.len() > 64 * 1024 {
+        bail!("Config exceeds 64 KiB; original configuration preserved");
+    }
     let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     let mut file = OpenOptions::new()
         .write(true)
@@ -159,7 +167,7 @@ fn write_config(path: &Path, value: &Value) -> Result<()> {
         .mode(0o600)
         .open(&temp)?;
     let result = (|| -> Result<()> {
-        file.write_all(&serde_json::to_vec_pretty(value)?)?;
+        file.write_all(&encoded)?;
         file.sync_all()?;
         std::fs::rename(&temp, path)?;
         Ok(())
@@ -826,6 +834,9 @@ async fn main() -> Result<()> {
         if args.allow_local_http {
             command.arg("--allow-local-http");
         }
+        if args.enable_service_probes {
+            command.arg("--enable-service-probes");
+        }
         return Err(command.exec().into());
     }
     let parent_metadata = std::fs::metadata(parent)?;
@@ -900,6 +911,27 @@ async fn main() -> Result<()> {
     } else {
         println!("Config file (--config): {:?}\nReport URL (--endpoint / --public): {endpoint}\nDevice ID: {}\nFull report interval (interval): {interval_ms} ms\nRealtime samples (realtime_metrics / --no-realtime): {realtime_metrics}\nCompression (compress_reports / --no-compression): {compress_reports}\nMode: read-only collection; updates require a local operator", args.config, identity.agent_id);
     }
+    if args.enable_service_probes {
+        let mut saved = read_config(&args.config)?;
+        saved["enable_service_probes"] = json!(true);
+        write_config(&args.config, &saved)?;
+    }
+    let service_probes_enabled =
+        args.enable_service_probes || config["enable_service_probes"].as_bool() == Some(true);
+    if args.language == "zh-CN" {
+        println!("本机服务探针 (--enable-service-probes): {service_probes_enabled}");
+    } else {
+        println!("Local service probes (--enable-service-probes): {service_probes_enabled}");
+    }
+    let probe_state = Arc::new(Mutex::new(service_probes::State::default()));
+    if service_probes_enabled {
+        if let (Some(revision), Ok(probes)) = (
+            config["service_probe_revision"].as_str(),
+            service_probes::parse(&config["service_probes"]),
+        ) {
+            probe_state.lock().configure(probes, revision.to_owned());
+        }
+    }
     let mut applied_revision = config["remote_config_revision"].as_str().map(str::to_owned);
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
@@ -942,6 +974,9 @@ async fn main() -> Result<()> {
     let transport = Arc::new(TransportRuntimeState::new(endpoint.to_string()));
     let shared_token = Arc::new(Mutex::new(token.clone()));
     let mut tasks = Vec::new();
+    if service_probes_enabled {
+        tasks.push(service_probes::start(probe_state.clone()));
+    }
     if !restricted {
         tasks.push(network_diag::spawn_ping_collector(
             ping.clone(),
@@ -1071,16 +1106,18 @@ async fn main() -> Result<()> {
         report.metadata.capabilities["telemetry.metrics"] = json!(realtime_metrics);
         report.metadata.capabilities["telemetry.compression"] = json!(compress_reports);
         report.metadata.capabilities["telemetry.settings"] = json!(1);
+        report.metadata.capabilities["telemetry.service_probes"] = json!(service_probes_enabled);
         report.metadata.capabilities["telemetry.config_revision"] = json!(applied_revision);
         report.metadata.capabilities["security.inventory"] = json!("osv-v1");
         report.metadata.capabilities["security.advisories"] = json!("dpkg-v1");
-        let bytes = if full {
-            serde_json::to_vec(&report)?
-        } else {
-            let mut wire = serde_json::to_value(&report)?;
+        let mut wire = serde_json::to_value(&report)?;
+        if !full {
             wire["report_kind"] = json!("metrics");
-            serde_json::to_vec(&wire)?
-        };
+        }
+        if service_probes_enabled {
+            wire["service_probes"] = probe_state.lock().report();
+        }
+        let bytes = serde_json::to_vec(&wire)?;
         if bytes.len() > MAX_REPORT {
             bail!("Collected report exceeds 8 MiB; refusing an unbounded upload");
         }
@@ -1144,6 +1181,29 @@ async fn main() -> Result<()> {
                 }
                 if let Some(ms) = value["report_interval_ms"].as_u64() {
                     interval_ms = ms.clamp(5_000, 1_800_000);
+                }
+                if service_probes_enabled {
+                    let next = &value["service_probes"];
+                    if let Some(revision) = next["revision"].as_str().filter(|r| {
+                        r.len() == 16
+                            && r.bytes()
+                                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                    }) {
+                        if probe_state.lock().revision.as_deref() != Some(revision) {
+                            if let Ok(probes) = service_probes::parse(&next["probes"]) {
+                                let mut saved = read_config(&args.config)?;
+                                if saved["auth_token"].as_str() != Some(token.as_str()) {
+                                    bail!("Config changed during service probe setup");
+                                }
+                                saved["service_probes"] = next["probes"].clone();
+                                saved["service_probe_revision"] = json!(revision);
+                                match write_config(&args.config, &saved) {
+                                    Ok(()) => probe_state.lock().configure(probes, revision.to_owned()),
+                                    Err(_) => warn!("Could not persist service configuration; keeping prior checks and continuing telemetry"),
+                                }
+                            }
+                        }
+                    }
                 }
                 let configuration = &value["agent_config"];
                 if configuration["version"].as_u64() == Some(1)

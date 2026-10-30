@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.3.9**; the release series starts at **v1.0.0**.
+The current release is **v1.4.0**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -603,3 +603,58 @@ selected metrics in canonical time/CPU/memory/disk/network-rx/network-tx order.
 With every metric disabled, effective history is off and the public history API
 returns 403. `visibility` includes cpu/memory/disk/network/history and invalidates
 view caches on changes. Owner full reports and six-column history remain intact.
+
+### Personal uptime monitoring
+
+Each private device row has **Availability monitoring**. Heartbeat availability
+uses the existing Agent and starts recording minute observations after this
+receiver release is activated. There is no retroactive history.
+
+To use a device as your own HTTP/TCP probe, manually update its Agent and start
+with its **existing config** plus `--enable-service-probes`; or select **Allow this
+Agent to probe local services** in the installation dialog. Local consent is saved
+privately; remove/set `enable_service_probes=false` locally to revoke it and
+restart. Server configuration cannot grant it. Existing processes are not updated
+or restarted remotely. The web UI then lets the space owner add checks to that
+probe: HTTP(S) URL or TCP host:port, interval60-3600s and timeout1-10s. Delete and
+create a fresh monitor when changing a target so histories do not mix.
+
+Probe checks run on that device and can reach its own loopback/LAN services.
+They issue only GET / TCP connect: no commands, scripts, custom headers, secrets,
+proxy environment, redirects or response-body reads. A 200-399 HTTP response is
+up at the first hop. Probe offline, missing/stale result and configuration pending
+are **unknown**, separate from a failed service check.
+
+The private monitor view shows availability, response-time charts, transitions,
+and observation coverage. Availability describes known minute observations;
+unknown periods are excluded and cannot prove 100% continuous uptime. Refreshing
+or changing browsers reads the same encrypted Redis history. The existing Cron
+notification entrypoint records these observations even when SMTP is unconfigured.
+`uptime_retention_days` (default30, range1-365) is a startup setting. Packed,
+compressed minute/hour chunks expire automatically; recent transitions are
+bounded. Existing email consent continues to cover device offline/recovery;
+service checks currently expose failures in the dashboard and transition log.
+Service targets and this history are not added to anonymous sharing.
+
+### PHP-only hosting with a private Unix socket
+
+On accounts without Passenger, an operator can provision `ops/socket_gateway.py`
+beside the existing private deployment gate and select `transport: "unix-php"`
+in `deploy-config.json`. A PHP front controller forwards a fixed local Unix
+socket; no receiver or Redis TCP listener is opened. The gateway retains normal
+space/device signatures, sessions, CSRF, encrypted storage and read-only semantics.
+It caps concurrent server work with startup `unix_workers` (default32). On this
+transport the account's once-per-minute periodic entrypoint holds a foreground
+supervisor, with a shared file lock suppressing duplicate invocations. This is
+necessary where panel terminals use disposable PID namespaces: a daemon started
+inside a terminal does not prove persistence. The supervisor starts Redis and
+versioned receiver processes in its own long-lived scheduler context, runs periodic
+jobs, and handles an atomic candidate request from CI. The deployment gate never
+signals another namespace's PID. It validates the candidate Unix socket and public
+health before promotion, retaining the old backend until commit.
+
+If the account Python lacks ensurepip, place an officially downloaded, SHA-256
+verified pip wheel at private `bin/pip.whl` and store its exact `pip_sha256` in the
+private deploy config. Only this transport uses a venv without pip and this
+verified bootstrap wheel to install the existing hash-locked dependencies.
+Configuration, sockets, logs and PID files remain owner-only outside the web root.
