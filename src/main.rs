@@ -33,6 +33,17 @@ use w_monitor_sdk::{
 const MAX_REPORT: usize = 8 * 1024 * 1024;
 const MAX_RESPONSE: usize = 1024 * 1024;
 
+#[derive(Debug)]
+struct HtmlReceiverResponse(String);
+
+impl std::fmt::Display for HtmlReceiverResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "接收端 {} 返回了 HTML 防护或代理页面，无法上报 JSON。请选择其他节点或联系主机商豁免该域名。 / Receiver returned HTML instead of JSON; select another node or ask the hosting provider to exempt this domain.", self.0)
+    }
+}
+
+impl std::error::Error for HtmlReceiverResponse {}
+
 #[derive(Parser)]
 #[command(
     version,
@@ -296,9 +307,9 @@ async fn public_setup(origin: &str, language: &str) -> Result<Value> {
                 .next()
                 .filter(|v| v.starts_with("__Host-wm_public=wms_"))
                 .map(str::to_owned)
-        })
-        .context("Missing setup session cookie")?;
+        });
     let session = response_json(response).await?;
+    let cookie = cookie.context("Missing setup session cookie")?;
     let csrf = session["csrf"]
         .as_str()
         .context("Missing setup CSRF token")?;
@@ -415,13 +426,25 @@ async fn post_report(
         request = request.header(name, value);
     }
     let response = request.body(body.to_vec()).send().await?;
-    if !response.status().is_success() {
-        bail!("Report rejected: HTTP {}", response.status().as_u16());
-    }
     response_json(response).await
 }
 
 async fn response_json(response: reqwest::Response) -> Result<Value> {
+    let origin = response.url().origin().ascii_serialization();
+    if response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| {
+            v.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("text/html")
+        })
+    {
+        return Err(HtmlReceiverResponse(origin).into());
+    }
     if !response.status().is_success() {
         bail!(
             "Receiver rejected request: HTTP {}",
@@ -442,6 +465,9 @@ async fn response_json(response: reqwest::Response) -> Result<Value> {
             bail!("Response exceeds limit");
         }
         bytes.extend_from_slice(&chunk);
+    }
+    if bytes.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'<') {
+        return Err(HtmlReceiverResponse(origin).into());
     }
     Ok(serde_json::from_slice(&bytes)?)
 }
@@ -525,8 +551,11 @@ async fn main() -> Result<()> {
                 drop(reservation);
                 match setup {
                     Ok(value) => value,
-                    Err(_) => {
+                    Err(error) => {
                         std::fs::remove_file(&args.config)?;
+                        if error.is::<HtmlReceiverResponse>() {
+                            return Err(error);
+                        }
                         bail!("Anonymous setup failed. Keep any recovery key printed above; setup was not retried.");
                     }
                 }
@@ -853,6 +882,7 @@ async fn main() -> Result<()> {
             (bytes, false)
         };
         let mut response = None;
+        let mut receiver_html = false;
         for attempt in 0..=2 {
             match post_report(
                 &client,
@@ -871,6 +901,11 @@ async fn main() -> Result<()> {
                 }
                 // reqwest errors contain URLs but never the Authorization header;
                 // print only the failure class to keep endpoint details private.
+                Err(error) if error.is::<HtmlReceiverResponse>() => {
+                    warn!("{error} Retrying the same receiver in at least 60 seconds; credentials remain unchanged.");
+                    receiver_html = true;
+                    break;
+                }
                 Err(_) => warn!(attempt, "Report delivery failed"),
             }
             if attempt < 2 {
@@ -973,7 +1008,7 @@ async fn main() -> Result<()> {
         }
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
-            _ = tokio::time::sleep(Duration::from_millis(metrics_ms.unwrap_or(interval_ms)).saturating_sub(cycle_started.elapsed())) => {},
+            _ = tokio::time::sleep(Duration::from_millis(if receiver_html { interval_ms.max(60_000) } else { metrics_ms.unwrap_or(interval_ms) }).saturating_sub(cycle_started.elapsed())) => {},
         }
     }
     for task in tasks {

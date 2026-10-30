@@ -151,6 +151,15 @@ w-monitor-lite --public https://wm-uk.myfastools.com --language zh-CN \
 The separate path creates or resumes that node's device and page. The existing
 receiver's configuration remains available for its own process.
 
+The receiver must return JSON to setup and reporting requests. If a hosting
+firewall or proxy returns an HTML page, the Agent names the affected origin and
+reports that page type without printing its body or cookies. Anonymous setup
+stops without retrying its create request. An existing device skips immediate
+retries and waits at least 60 seconds before retrying its own receiver; it never
+switches regional endpoints or credentials automatically. Browser challenges must
+be exempted at the hosting provider for an API domain; changing the User-Agent
+cannot guarantee access.
+
 ## Architecture
 
 The Agent consumes the public [w-monitor-collectors](https://github.com/agi-wang/w-monitor-collectors)
