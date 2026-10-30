@@ -23,5 +23,7 @@
   "history_fine_retention_seconds": 900,
   "history_minute_retention_seconds": 3600,
   "history_hour_retention_seconds": 2592000,
-  "history_fine_step_seconds": 3
+  "history_fine_step_seconds": 3,
+  "uptime_retention_days": 30,
+  "unix_workers": 32
 }

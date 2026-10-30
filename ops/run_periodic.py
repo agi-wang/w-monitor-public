@@ -19,6 +19,9 @@ if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
     raise SystemExit("No active receiver release")
 root = Path.home() / "w-monitor-public/releases" / tag
 environment = dict(os.environ, WM_PUBLIC_CONFIG=str(private / "config.json"))
+config = json.loads((private / "deploy-config.json").read_text())
+if config.get("transport") == "unix-php":
+    subprocess.run([sys.executable, str(private / "socket_gateway.py"), "start", tag], check=True, timeout=20)
 failed = False
 for module, timeout in (("metrics.py", 10), ("notify.py", 45)):
     try:

@@ -23,9 +23,10 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from redis_cache import RedisCache, MetricHistory
 from encryption import SealedData, verify_signature
+from metrics import AvailabilityHistory, configuration as probe_configuration, validate_probe, probe_status
 from i18n import EN, language, render_html, translate
 
-VERSION = "1.3.9"
+VERSION = "1.4.0"
 SOURCE_RELEASE = Path(__file__).resolve().parents[1].name
 MAX_BODY = 8 * 1024 * 1024
 WEB = Path(__file__).resolve().parent / "web"
@@ -100,6 +101,8 @@ HISTORY = MetricHistory(CACHE, BOX, DYNAMIC, (
     cadence("history_minute_retention_seconds", 3600, 60, 604800),
     cadence("history_hour_retention_seconds", 2592000, 60, 31536000),
 ), cadence("history_fine_step_seconds", 3, 1, 60))
+UPTIME_DYNAMIC = NAMESPACE + "availability"
+UPTIME_HISTORY = AvailabilityHistory(CACHE, BOX, UPTIME_DYNAMIC, cadence("uptime_retention_days", 30, 1, 365))
 LINK = r"wm1_[A-Za-z0-9_-]{40,320}"
 COOKIE = "__Host-wm_public" if ORIGIN.startswith("https:") else "wm_public_dev"
 
@@ -161,6 +164,10 @@ with database() as _db:
       show_network INTEGER NOT NULL DEFAULT 0, show_history INTEGER NOT NULL DEFAULT 0,
       show_cpu INTEGER NOT NULL DEFAULT 1, show_memory INTEGER NOT NULL DEFAULT 1, show_disk INTEGER NOT NULL DEFAULT 1);
     CREATE INDEX IF NOT EXISTS page_space ON pages(space_id);
+    CREATE TABLE IF NOT EXISTS service_monitors(
+      id TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+      name TEXT NOT NULL, settings TEXT NOT NULL, created_at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS service_monitor_device ON service_monitors(device_id);
     CREATE TABLE IF NOT EXISTS notification_state(
       device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
       state TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0);
@@ -503,6 +510,57 @@ def projection(row, meta=None, public=False, available=True, page_id=None, show_
     return result
 
 
+def availability_view(db, space_id, device_id, environ):
+    row = db.execute("SELECT * FROM devices WHERE id=? AND space_id=?", (device_id, space_id)).fetchone()
+    if not row:
+        raise Rejected(404, "设备不存在")
+    query = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
+    if not set(query) <= {"monitor", "range"} or any(len(items) != 1 for items in query.values()):
+        raise Rejected(400, "Invalid availability query")
+    selection = query.get("range", ["24h"])[0]
+    if selection not in (*UPTIME_HISTORY.ranges, "all"):
+        raise Rejected(400, "无效历史查询")
+    monitor_id = query.get("monitor", ["device"])[0]
+    metadata, available = live_metadata([row])
+    meta = metadata.get(device_id, {})
+    received = meta.get("received_at")
+    online = received >= time.time() - offline_after(meta) if type(received) is int else None
+    config = probe_configuration(db, BOX, device_id)
+    monitors = []
+    for monitor in db.execute("SELECT * FROM service_monitors WHERE device_id=? ORDER BY created_at,id", (device_id,)):
+        settings = BOX.open("service-monitor:" + monitor["id"], monitor["settings"])
+        monitors.append({"id": monitor["id"], "created_at": monitor["created_at"], **settings, **probe_status(meta, {"id": monitor["id"], **settings}, online, config["revision"])})
+    selected = next((m for m in monitors if m["id"] == monitor_id), None)
+    if monitor_id != "device" and selected is None:
+        raise Rejected(404, "Service monitor not found")
+    identifier = device_id if selected is None else device_id + ":" + monitor_id
+    try:
+        history = UPTIME_HISTORY.snapshot(identifier, selection, selected["created_at"] if selected else row["created_at"])
+        events = CACHE.command("LRANGE", UPTIME_DYNAMIC + ":events:" + identifier, 0, 19)
+        if events is None:
+            raise ConnectionError()
+        events = [BOX.open("uptime-event:" + identifier, event) for event in events]
+    except (ValueError, ConnectionError):
+        raise Rejected(503, "历史数据暂时不可用，请稍后重试") from None
+    latest = CACHE.command("HGET", UPTIME_DYNAMIC, "meta:" + identifier)
+    latest = BOX.open("meta:" + identifier, latest) if latest else {}
+    return {"name": row["name"], "service_probes_enabled": meta.get("service_probes_enabled") is True, "data_available": available, "worker_available": CACHE.command("GET", UPTIME_DYNAMIC + ":worker") is not None, "device_state": "up" if online else "down" if online is False else "unknown", "monitors": monitors, "selected": monitor_id, "state": selected["state"] if selected else "up" if online else "down" if online is False else "unknown", "state_since": latest.get("since") if latest.get("state") == (selected["state"] if selected else "up" if online else "down" if online is False else "unknown") and time.time() - latest.get("received_at", 0) <= 180 else None, "events": events, "history": history, "read_only": True}
+
+
+def uptime_identifiers(db, device_ids):
+    identifiers = list(device_ids)
+    for device in device_ids:
+        identifiers += [device + ":" + row[0] for row in db.execute("SELECT id FROM service_monitors WHERE device_id=?", (device,))]
+    return identifiers
+
+
+def forget_availability(identifiers, space_id, forget_space=False):
+    for offset in range(0, len(identifiers), 128):
+        batch = identifiers[offset:offset + 128]
+        CACHE.remove_reports(UPTIME_DYNAMIC, batch, space_id, forget_space=forget_space)
+        CACHE.command("UNLINK", *(UPTIME_DYNAMIC + ":events:" + identifier for identifier in batch))
+
+
 def config_envelope(settings):
     return {"version": 1, "revision": digest(json.dumps(settings, sort_keys=True, separators=(",", ":")))[:16], "settings": settings}
 
@@ -682,6 +740,22 @@ def receive(db, environ):
         else:
             collectors["network"] = network
     metadata = {"name": name, "received_at": int(time.time()), "expected_interval_ms": METRICS_INTERVAL if supports_metrics else interval, "cpu": percent(cpu.get("usage_percent", cpu.get("usage"))), "memory": percent(memory.get("usage_percent")), "disk": percent(disk.get("usage_percent")), "network_accounting_version": 2, "network_accounting_scope": network["accounting_scope"], "network_rx_bps": network_rate(network.get("total_received_bytes_per_sec")), "network_tx_bps": network_rate(network.get("total_transmitted_bytes_per_sec"))}
+    metadata["service_probes_enabled"] = bool(signed_key) and isinstance(capabilities, dict) and capabilities.get("telemetry.service_probes") is True
+    probe_config = probe_configuration(db, BOX, device_id)
+    probe_report = report.get("service_probes")
+    if metadata["service_probes_enabled"] and signed_key:
+        reply["service_probes"] = probe_config
+        if isinstance(probe_report, dict) and probe_report.get("revision") == probe_config["revision"] and isinstance(probe_report.get("results"), list):
+            allowed = {probe["id"]: probe for probe in probe_config["probes"]}
+            results = {}
+            for item in probe_report["results"][:64]:
+                if not isinstance(item, dict) or item.get("id") not in allowed or type(item.get("ok")) is not bool or type(item.get("age_seconds")) is not int or not 0 <= item["age_seconds"] <= 7200:
+                    continue
+                latency, code = item.get("latency_ms"), item.get("status_code")
+                if type(latency) is not int or not 0 <= latency <= 10000 or (code is not None and (type(code) is not int or not 100 <= code <= 599)):
+                    continue
+                results[item["id"]] = {"ok": item["ok"], "checked_at": metadata["received_at"] - item["age_seconds"], "latency_ms": latency, "status_code": code, "error": item.get("error") if item.get("error") in ("connection_or_tls", "timeout") else None}
+            metadata.update(service_results=results, service_probe_revision=probe_config["revision"])
     if isinstance(capabilities, dict) and type(capabilities.get("telemetry.settings")) is int and capabilities["telemetry.settings"] == 1 and all(type(capabilities.get(key)) is bool for key in ("telemetry.metrics", "telemetry.compression")):
         revision = capabilities.get("telemetry.config_revision")
         metadata["agent_settings"] = {"revision": revision if isinstance(revision, str) and re.fullmatch(r"[a-f0-9]{16}", revision) else None, "settings": {"realtime_metrics": capabilities["telemetry.metrics"], "compress_reports": capabilities["telemetry.compression"]}}
@@ -903,6 +977,10 @@ def route(db, environ):
         space = current_space(db, session)
         operation_guard(environ, space)
         return 200, device_settings(db, space["id"], path.split("/")[3]), headers
+    if method == "GET" and re.fullmatch(r"/api/devices/[a-f0-9]{32}/uptime", path):
+        space = current_space(db, session)
+        operation_guard(environ, space)
+        return 200, availability_view(db, space["id"], path.split("/")[3], environ), headers
     if method == "GET" and path == "/api/email":
         space = current_space(db, session)
         operation_guard(environ, space)
@@ -1024,6 +1102,39 @@ def route(db, environ):
         db.execute("INSERT INTO device_settings(device_id,settings) VALUES(?,?) ON CONFLICT(device_id) DO UPDATE SET settings=excluded.settings", (device_id, json.dumps(settings, sort_keys=True, separators=(",", ":"))))
         db.commit()
         return 200, device_settings(db, space["id"], device_id), headers
+    if path in ("/api/services/create", "/api/services/delete"):
+        device_id = value.get("device_id")
+        if not isinstance(device_id, str) or not re.fullmatch(r"[a-f0-9]{32}", device_id):
+            raise Rejected(400, "Invalid probe device")
+        begin_browser_write(db, session, space["id"])
+        if not db.execute("SELECT id FROM devices WHERE id=? AND space_id=?", (device_id, space["id"])).fetchone():
+            raise Rejected(404, "设备不存在")
+        if path.endswith("create"):
+            if set(value) != {"device_id", "settings"}:
+                raise Rejected(400, "Invalid service monitor fields")
+            try:
+                settings = validate_probe(value["settings"])
+            except (ValueError, TypeError):
+                raise Rejected(400, "Invalid fixed HTTP/TCP probe configuration") from None
+            metadata, available = live_metadata([{"id": device_id}])
+            if not available or metadata.get(device_id, {}).get("service_probes_enabled") is not True:
+                raise Rejected(409, "请先在设备上手动开启服务探测")
+            if db.execute("SELECT COUNT(*) FROM service_monitors WHERE device_id=?", (device_id,)).fetchone()[0] >= 64:
+                raise Rejected(400, "A probe device supports at most 64 service checks")
+            monitor_id = secrets.token_hex(16)
+            db.execute("INSERT INTO service_monitors VALUES(?,?,?,?,?)", (monitor_id, device_id, settings["name"], BOX.seal("service-monitor:" + monitor_id, settings), int(time.time())))
+            if len(json.dumps(probe_configuration(db, BOX, device_id)["probes"]).encode()) > 32768:
+                raise Rejected(400, "Service probe configuration exceeds 32 KiB")
+        else:
+            if set(value) != {"device_id", "id"} or not isinstance(value.get("id"), str) or not re.fullmatch(r"[a-f0-9]{32}", value["id"]):
+                raise Rejected(400, "Invalid service monitor")
+            monitor_id = value["id"]
+            if not db.execute("DELETE FROM service_monitors WHERE id=? AND device_id=?", (monitor_id, device_id)).rowcount:
+                raise Rejected(404, "Service monitor not found")
+        db.commit()
+        if path.endswith("delete"):
+            forget_availability([device_id + ":" + monitor_id], space["id"])
+        return 200, {"ok": True, "id": monitor_id}, headers
     if path == "/api/email/bind":
         active = begin_browser_write(db, session, space["id"])
         if not active["subject"] or not active["verified_email"]:
@@ -1062,12 +1173,14 @@ def route(db, environ):
             raise Rejected(400, "请完整输入空间名称以删除")
         begin_browser_write(db, session, space["id"])
         device_ids = [row[0] for row in db.execute("SELECT id FROM devices WHERE space_id=?", (space["id"],))]
+        availability_ids = uptime_identifiers(db, device_ids)
         db.execute("DELETE FROM sessions WHERE space_id=?", (space["id"],))
         db.execute("DELETE FROM pages WHERE space_id=?", (space["id"],))
         db.execute("DELETE FROM devices WHERE space_id=?", (space["id"],))
         db.execute("DELETE FROM spaces WHERE id=?", (space["id"],))
         db.commit()
         CACHE.remove_reports(DYNAMIC, device_ids, space["id"], forget_space=True)
+        forget_availability(availability_ids, space["id"], forget_space=True)
         return 200, {"ok": True}, headers
     if path in ("/api/spaces/claim", "/api/recovery/rotate"):
         recovery, bootstrap = secret("wmr_"), secret("wmb_")
@@ -1098,11 +1211,13 @@ def route(db, environ):
     if path == "/api/devices/revoke":
         begin_browser_write(db, session, space["id"])
         row = db.execute("SELECT id FROM devices WHERE id=? AND space_id=?", (value.get("id"), space["id"])).fetchone()
+        availability_ids = uptime_identifiers(db, [row["id"]]) if row else []
         db.execute("DELETE FROM devices WHERE id=? AND space_id=?", (value.get("id"), space["id"]))
         db.execute("UPDATE spaces SET revision=revision+1 WHERE id=?", (space["id"],))
         db.commit()
         if row:
             CACHE.remove_reports(DYNAMIC, [row["id"]], space["id"])
+            forget_availability(availability_ids, space["id"])
         return 200, {"ok": True}, headers
     if path.startswith("/api/pages/"):
         page_id = value.get("id")

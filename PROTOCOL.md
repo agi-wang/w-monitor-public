@@ -1,4 +1,4 @@
-# Public monitoring contract v1.3.9
+# Public monitoring contract v1.4.0
 
 [OpenAPI](server/openapi.json) describes browser, ingestion and public-status APIs.
 This receiver implements the existing v1.0 full report envelope; it has no Private
@@ -330,3 +330,40 @@ requests return 400; Redis unavailability during signature verification returns
 503. Missing telemetry alone returns null `last_report_at`, preserving durable
 binding information. Old receivers return 404 and clients label lookup unconfirmed
 while preserving their existing configuration and normal report compatibility.
+
+## Agent-hosted service checks and availability (v1.4.0)
+
+The Agent host can serve as its owner's probe. A local operator must explicitly
+start with `--enable-service-probes` (persisted in its existing 0600 config).
+Remote configuration cannot enable this consent. Older Agents remain supported
+and need a local manual update to gain probing; they receive no new commands.
+
+A signed Agent advertises `metadata.capabilities["telemetry.service_probes"]=true`.
+The normal report response may then include a separate `service_probes` object:
+`{revision,probes:[{id,kind,target,interval_seconds,timeout_seconds}]}`. It does not
+extend the existing two-boolean `agent_config`, preserving older clients.
+Only HTTP(S) GET and TCP connect are accepted, with no shell, custom headers,
+credentials, query, fragment, redirects or response-body collection. HTTP status
+200-399 means the first endpoint responds successfully; redirects are not followed.
+Targets may be loopback/LAN because execution occurs on the opted-in user's host,
+never on a receiver. Intervals are 60-3600 seconds, total timeouts 1-10 seconds,
+with at most 64 checks / 32 KiB per configuration and eight concurrent checks.
+Overdue work is scheduled fairly without accumulating a retry queue.
+
+Reports optionally carry `service_probes:{revision,results:[{id,ok,status_code,
+latency_ms,error,age_seconds}]}`. Result age uses Linux CLOCK_BOOTTIME, including
+suspend. Accepted results must match the credential-bound device's configured
+revision and IDs. Pending configuration, stale results or an offline probe make
+service status unknown. No target URL, raw response, credential or exception is
+uploaded. Error classes are only `timeout`, `connection_or_tls` or null.
+
+`GET /api/devices/{id}/uptime?monitor=device&range=24h`, and owner/CSRF-protected
+`POST /api/services/create|delete` are described in OpenAPI. Service targets and
+history are private. Existing anonymous sharing does not acquire new fields.
+History is minute-observed availability (not proof of uninterrupted service):
+known up/down samples determine availability, unknowns are excluded and coverage
+is reported separately. Missing minutes stay missing. Packed, compressed,
+authenticated Redis chunks retain minute/hour tiers; `uptime_retention_days`
+controls the longest tier (1-365 days, default30). Transition logs retain the most
+recent100 entries per monitor (latest20 returned). Removing a device, monitor or
+space removes its stored monitoring history. SQL holds definitions, not telemetry.

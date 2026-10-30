@@ -164,8 +164,17 @@ def deploy():
                 download_root.chmod(0o755)
                 for name, data in downloads.items():
                     atomic(download_root / name, data, 0o644)
-                subprocess.run([python, "-m", "venv", str(staging / "runtime")], check=True, timeout=45, stdout=subprocess.DEVNULL)
-                subprocess.run([str(staging / "runtime/bin/python"), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--require-hashes", "--only-binary=:all:", "--index-url", "https://pypi.org/simple", "--retries", "2", "--timeout", "10", "-r", str(staging / "server/requirements.lock")], check=True, timeout=150, stdout=subprocess.DEVNULL)
+                environment = dict(os.environ)
+                venv = [python, "-m", "venv"]
+                if config.get("transport") == "unix-php":
+                    wheel = PRIVATE / "bin/pip.whl"
+                    if wheel.is_symlink() or hashlib.sha256(wheel.read_bytes()).hexdigest() != config.get("pip_sha256"):
+                        raise RuntimeError("Verified deployment pip wheel required")
+                    venv.append("--without-pip")
+                    environment["PYTHONPATH"] = str(wheel)
+                    environment["PIP_CONFIG_FILE"] = "/dev/null"
+                subprocess.run([*venv, str(staging / "runtime")], check=True, timeout=45, stdout=subprocess.DEVNULL)
+                subprocess.run([str(staging / "runtime/bin/python"), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--require-hashes", "--only-binary=:all:", "--index-url", "https://pypi.org/simple", "--retries", "2", "--timeout", "10", "-r", str(staging / "server/requirements.lock")], check=True, timeout=150, stdout=subprocess.DEVNULL, env=environment)
                 atomic(staging / "config-path", (str(PRIVATE / "config.json") + "\n").encode())
                 atomic(staging / "archive.sha256", (checksum + "\n").encode())
                 os.rename(staging, target)
@@ -176,13 +185,37 @@ def deploy():
         if htaccess.is_symlink():
             raise RuntimeError("Hosting configuration cannot be a symlink")
         previous = htaccess.read_bytes() if htaccess.exists() else b"Require all denied\n"
-        settings = f'Options -Indexes\nPassengerAppRoot "{target}/server"\nPassengerBaseURI "/"\nPassengerPython "{wsgi}"\nPassengerAppType wsgi\nPassengerStartupFile passenger_wsgi.py\n'
+        unix = config.get("transport") == "unix-php"
+        gateway = PRIVATE / "socket_gateway.py"
+        gateway_pointer = PRIVATE / "gateway-active.json"
+        previous_gateway = gateway_pointer.read_bytes() if gateway_pointer.exists() else None
+        if unix:
+            if gateway.is_symlink() or not gateway.is_file():
+                raise RuntimeError("Trusted Unix gateway required")
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("wm_socket_gateway", gateway)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            subprocess.run([python, str(gateway), "start", tag], check=True, timeout=20, stdout=subprocess.DEVNULL)
+            atomic(document_root / "index.php", module.php_front(PRIVATE).encode(), 0o644)
+            settings = 'Options -Indexes\nDirectoryIndex index.php\nRewriteEngine On\nRewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]\nRewriteCond %{REQUEST_FILENAME} !-f\nRewriteRule ^ index.php [L,QSA]\n'
+            atomic(gateway_pointer, json.dumps({"tag": tag}).encode())
+        else:
+            settings = f'Options -Indexes\nPassengerAppRoot "{target}/server"\nPassengerBaseURI "/"\nPassengerPython "{wsgi}"\nPassengerAppType wsgi\nPassengerStartupFile passenger_wsgi.py\n'
         atomic(htaccess, settings.encode(), 0o644)
         if not healthy(origin, tag[1:], first_deployment=not active_tag):
             atomic(htaccess, previous, 0o644)
+            if unix:
+                if previous_gateway is None:
+                    gateway_pointer.unlink(missing_ok=True)
+                else:
+                    atomic(gateway_pointer, previous_gateway)
+                subprocess.run([python, str(gateway), "stop", tag], check=False, timeout=15, stdout=subprocess.DEVNULL)
             raise RuntimeError("Candidate health failed; prior hosting configuration restored")
         previous_tag = active_tag if active_tag and active_tag != tag else active.get("previous_tag")
         atomic(active_path, json.dumps({"tag": tag, "sha256": checksum, "previous_tag": previous_tag}).encode())
+        if unix and active_tag and active_tag != tag:
+            subprocess.run([python, str(gateway), "stop", active_tag], check=False, timeout=15, stdout=subprocess.DEVNULL)
         if config.get("reset_to_tag") == tag:
             config.pop("reset_to_tag")
             atomic(CONFIG, json.dumps(config).encode())
