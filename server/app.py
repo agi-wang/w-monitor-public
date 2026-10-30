@@ -516,7 +516,7 @@ def availability_view(db, space_id, device_id, environ):
         raise Rejected(404, "设备不存在")
     query = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
     if not set(query) <= {"monitor", "range"} or any(len(items) != 1 for items in query.values()):
-        raise Rejected(400, "Invalid availability query")
+        raise Rejected(400, "无效可用性查询")
     selection = query.get("range", ["24h"])[0]
     if selection not in (*UPTIME_HISTORY.ranges, "all"):
         raise Rejected(400, "无效历史查询")
@@ -532,7 +532,7 @@ def availability_view(db, space_id, device_id, environ):
         monitors.append({"id": monitor["id"], "created_at": monitor["created_at"], **settings, **probe_status(meta, {"id": monitor["id"], **settings}, online, config["revision"])})
     selected = next((m for m in monitors if m["id"] == monitor_id), None)
     if monitor_id != "device" and selected is None:
-        raise Rejected(404, "Service monitor not found")
+        raise Rejected(404, "服务探测不存在")
     identifier = device_id if selected is None else device_id + ":" + monitor_id
     try:
         history = UPTIME_HISTORY.snapshot(identifier, selection, selected["created_at"] if selected else row["created_at"])
@@ -741,7 +741,7 @@ def receive(db, environ):
             collectors["network"] = network
     metadata = {"name": name, "received_at": int(time.time()), "expected_interval_ms": METRICS_INTERVAL if supports_metrics else interval, "cpu": percent(cpu.get("usage_percent", cpu.get("usage"))), "memory": percent(memory.get("usage_percent")), "disk": percent(disk.get("usage_percent")), "network_accounting_version": 2, "network_accounting_scope": network["accounting_scope"], "network_rx_bps": network_rate(network.get("total_received_bytes_per_sec")), "network_tx_bps": network_rate(network.get("total_transmitted_bytes_per_sec"))}
     metadata["service_probes_enabled"] = bool(signed_key) and isinstance(capabilities, dict) and capabilities.get("telemetry.service_probes") is True
-    probe_config = probe_configuration(db, BOX, device_id)
+    probe_config = probe_configuration(db, BOX, device_id) if metadata["service_probes_enabled"] else None
     probe_report = report.get("service_probes")
     if metadata["service_probes_enabled"] and signed_key:
         reply["service_probes"] = probe_config
@@ -1105,32 +1105,32 @@ def route(db, environ):
     if path in ("/api/services/create", "/api/services/delete"):
         device_id = value.get("device_id")
         if not isinstance(device_id, str) or not re.fullmatch(r"[a-f0-9]{32}", device_id):
-            raise Rejected(400, "Invalid probe device")
+            raise Rejected(400, "无效探针设备")
         begin_browser_write(db, session, space["id"])
         if not db.execute("SELECT id FROM devices WHERE id=? AND space_id=?", (device_id, space["id"])).fetchone():
             raise Rejected(404, "设备不存在")
         if path.endswith("create"):
             if set(value) != {"device_id", "settings"}:
-                raise Rejected(400, "Invalid service monitor fields")
+                raise Rejected(400, "无效服务探测字段")
             try:
                 settings = validate_probe(value["settings"])
             except (ValueError, TypeError):
-                raise Rejected(400, "Invalid fixed HTTP/TCP probe configuration") from None
+                raise Rejected(400, "仅允许固定 HTTP/TCP 探测配置") from None
             metadata, available = live_metadata([{"id": device_id}])
             if not available or metadata.get(device_id, {}).get("service_probes_enabled") is not True:
                 raise Rejected(409, "请先在设备上手动开启服务探测")
             if db.execute("SELECT COUNT(*) FROM service_monitors WHERE device_id=?", (device_id,)).fetchone()[0] >= 64:
-                raise Rejected(400, "A probe device supports at most 64 service checks")
+                raise Rejected(400, "单个探针最多配置 64 项服务检查")
             monitor_id = secrets.token_hex(16)
             db.execute("INSERT INTO service_monitors VALUES(?,?,?,?,?)", (monitor_id, device_id, settings["name"], BOX.seal("service-monitor:" + monitor_id, settings), int(time.time())))
             if len(json.dumps(probe_configuration(db, BOX, device_id)["probes"]).encode()) > 32768:
-                raise Rejected(400, "Service probe configuration exceeds 32 KiB")
+                raise Rejected(400, "服务探测配置不能超过 32 KiB")
         else:
             if set(value) != {"device_id", "id"} or not isinstance(value.get("id"), str) or not re.fullmatch(r"[a-f0-9]{32}", value["id"]):
-                raise Rejected(400, "Invalid service monitor")
+                raise Rejected(400, "无效服务探测")
             monitor_id = value["id"]
             if not db.execute("DELETE FROM service_monitors WHERE id=? AND device_id=?", (monitor_id, device_id)).rowcount:
-                raise Rejected(404, "Service monitor not found")
+                raise Rejected(404, "服务探测不存在")
         db.commit()
         if path.endswith("delete"):
             forget_availability([device_id + ":" + monitor_id], space["id"])

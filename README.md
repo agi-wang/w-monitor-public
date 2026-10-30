@@ -643,9 +643,15 @@ beside the existing private deployment gate and select `transport: "unix-php"`
 in `deploy-config.json`. A PHP front controller forwards a fixed local Unix
 socket; no receiver or Redis TCP listener is opened. The gateway retains normal
 space/device signatures, sessions, CSRF, encrypted storage and read-only semantics.
-It caps concurrent server work with startup `unix_workers` (default32), restarts
-through the account's existing periodic worker, and validates a candidate socket
-before promotion. Previous release processes remain available during readiness.
+It caps concurrent server work with startup `unix_workers` (default32). On this
+transport the account's once-per-minute periodic entrypoint holds a foreground
+supervisor, with a shared file lock suppressing duplicate invocations. This is
+necessary where panel terminals use disposable PID namespaces: a daemon started
+inside a terminal does not prove persistence. The supervisor starts Redis and
+versioned receiver processes in its own long-lived scheduler context, runs periodic
+jobs, and handles an atomic candidate request from CI. The deployment gate never
+signals another namespace's PID. It validates the candidate Unix socket and public
+health before promotion, retaining the old backend until commit.
 
 If the account Python lacks ensurepip, place an officially downloaded, SHA-256
 verified pip wheel at private `bin/pip.whl` and store its exact `pip_sha256` in the

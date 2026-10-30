@@ -3,6 +3,15 @@ import html
 import re
 
 EN = {
+    '无效可用性查询': 'Invalid availability query',
+    '服务探测不存在': 'Service monitor not found',
+    '无效探针设备': 'Invalid probe device',
+    '无效服务探测字段': 'Invalid service monitor fields',
+    '仅允许固定 HTTP/TCP 探测配置': 'Invalid fixed HTTP/TCP probe configuration',
+    '单个探针最多配置 64 项服务检查': 'A probe device supports at most 64 service checks',
+    '服务探测配置不能超过 32 KiB': 'Service probe configuration exceeds 32 KiB',
+    '无效服务探测': 'Invalid service monitor',
+
     '可用性监测': 'Availability monitoring',
     '设备在线率': 'Device availability',
     '设备在线率来自心跳；服务探测由你选择的 Agent 在本机执行。探针离线时，服务状态记为未知。': 'Device availability uses heartbeats. Your selected Agent probes services locally. An offline probe makes service status unknown.',

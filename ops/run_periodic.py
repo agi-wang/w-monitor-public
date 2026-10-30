@@ -8,6 +8,9 @@ import subprocess
 import sys
 
 private = Path(__file__).resolve().parent
+deploy_config = private / "deploy-config.json"
+if deploy_config.exists() and json.loads(deploy_config.read_text()).get("transport") == "unix-php":
+    os.execv(sys.executable, [sys.executable, str(private / "socket_gateway.py"), "supervise"])
 watchdog = private / "redis_watchdog.py"
 if watchdog.is_file() and not watchdog.is_symlink():
     subprocess.run([sys.executable, str(watchdog)], check=True, timeout=15)
@@ -19,9 +22,6 @@ if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
     raise SystemExit("No active receiver release")
 root = Path.home() / "w-monitor-public/releases" / tag
 environment = dict(os.environ, WM_PUBLIC_CONFIG=str(private / "config.json"))
-config = json.loads((private / "deploy-config.json").read_text())
-if config.get("transport") == "unix-php":
-    subprocess.run([sys.executable, str(private / "socket_gateway.py"), "start", tag], check=True, timeout=20)
 failed = False
 for module, timeout in (("metrics.py", 10), ("notify.py", 45)):
     try:

@@ -1192,8 +1192,10 @@ async fn main() -> Result<()> {
                                 }
                                 saved["service_probes"] = next["probes"].clone();
                                 saved["service_probe_revision"] = json!(revision);
-                                write_config(&args.config, &saved)?;
-                                probe_state.lock().configure(probes, revision.to_owned());
+                                match write_config(&args.config, &saved) {
+                                    Ok(()) => probe_state.lock().configure(probes, revision.to_owned()),
+                                    Err(_) => warn!("Could not persist service configuration; keeping prior checks and continuing telemetry"),
+                                }
                             }
                         }
                     }

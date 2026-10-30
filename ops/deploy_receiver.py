@@ -196,7 +196,7 @@ def deploy():
             spec = importlib.util.spec_from_file_location("wm_socket_gateway", gateway)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
-            subprocess.run([python, str(gateway), "start", tag], check=True, timeout=20, stdout=subprocess.DEVNULL)
+            subprocess.run([python, str(gateway), "request", tag], check=True, timeout=100, stdout=subprocess.DEVNULL)
             atomic(document_root / "index.php", module.php_front(PRIVATE).encode(), 0o644)
             settings = 'Options -Indexes\nDirectoryIndex index.php\nRewriteEngine On\nRewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]\nRewriteCond %{REQUEST_FILENAME} !-f\nRewriteRule ^ index.php [L,QSA]\n'
             atomic(gateway_pointer, json.dumps({"tag": tag}).encode())
@@ -210,12 +210,13 @@ def deploy():
                     gateway_pointer.unlink(missing_ok=True)
                 else:
                     atomic(gateway_pointer, previous_gateway)
-                subprocess.run([python, str(gateway), "stop", tag], check=False, timeout=15, stdout=subprocess.DEVNULL)
+                if active_tag:
+                    atomic(PRIVATE / "gateway-request.json", json.dumps({"tag": active_tag}).encode())
+                else:
+                    (PRIVATE / "gateway-request.json").unlink(missing_ok=True)
             raise RuntimeError("Candidate health failed; prior hosting configuration restored")
         previous_tag = active_tag if active_tag and active_tag != tag else active.get("previous_tag")
         atomic(active_path, json.dumps({"tag": tag, "sha256": checksum, "previous_tag": previous_tag}).encode())
-        if unix and active_tag and active_tag != tag:
-            subprocess.run([python, str(gateway), "stop", active_tag], check=False, timeout=15, stdout=subprocess.DEVNULL)
         if config.get("reset_to_tag") == tag:
             config.pop("reset_to_tag")
             atomic(CONFIG, json.dumps(config).encode())
@@ -226,7 +227,8 @@ def deploy():
         # Its stable wrapper selects active-release.json after every CI deploy.
         if config.get("periodic_enabled") is not True:
             raise RuntimeError("Hosting periodic worker must be provisioned")
-        subprocess.run([python, str(periodic)], check=True, timeout=60, stdout=subprocess.DEVNULL)
+        if not unix:
+            subprocess.run([python, str(periodic)], check=True, timeout=60, stdout=subprocess.DEVNULL)
         # Retain active and one preceding immutable release. Application data and
         # configuration are outside this directory and never touched here.
         candidates = sorted((path for path in releases.iterdir() if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", path.name) and path.is_dir() and not path.is_symlink()), key=lambda path: tuple(map(int, path.name[1:].split("."))), reverse=True)

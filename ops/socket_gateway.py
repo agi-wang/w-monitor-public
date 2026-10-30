@@ -183,6 +183,63 @@ def serve(tag):
         path.unlink(missing_ok=True)
 
 
+def request(tag):
+    paths(tag)
+    target = PRIVATE / "gateway-request.json"
+    temporary = PRIVATE / (".gateway-request-" + str(os.getpid()))
+    with open(temporary, "x") as file:
+        json.dump({"tag": tag}, file)
+        file.flush()
+        os.fsync(file.fileno())
+    os.replace(temporary, target)
+    for _ in range(180):
+        if healthy(tag):
+            return
+        time.sleep(0.5)
+    raise RuntimeError("Scheduled Unix receiver failed readiness")
+
+
+def supervise():
+    # A foreground account-Cron owner survives disposable panel terminal sessions.
+    # The shared file lock suppresses later minute invocations across PID namespaces.
+    with open(PRIVATE / "supervisor.lock", "a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        tags, checked, periodic = set(), 0, 0
+        while True:
+            try:
+                if time.monotonic() >= checked:
+                    subprocess.run([sys.executable, str(PRIVATE / "redis_watchdog.py")], check=True, timeout=15, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    checked = time.monotonic() + 15
+                active_path = PRIVATE / "active-release.json"
+                active = json.loads(active_path.read_text()).get("tag") if active_path.exists() else None
+                queued = PRIVATE / "gateway-request.json"
+                desired = json.loads(queued.read_text()).get("tag") if queued.exists() else active
+                if desired:
+                    paths(desired)
+                    start(desired)
+                    tags.add(desired)
+                # Keep the active backend until a candidate has been committed.
+                if active and active != desired:
+                    start(active)
+                    tags.add(active)
+                if not desired or desired == active:
+                    for tag in list(tags - {active}):
+                        stop(tag)
+                        tags.discard(tag)
+                if active and time.monotonic() >= periodic:
+                    target = ROOT / active
+                    for module, timeout in (("metrics.py", 10), ("notify.py", 45)):
+                        subprocess.run([str(target / "runtime/bin/python"), str(target / "server" / module)], env=dict(os.environ, WM_PUBLIC_CONFIG=str(PRIVATE / "config.json")), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout, check=False)
+                    periodic = time.monotonic() + 60
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+                # Never write tenant reports, credentials, URLs or exception text.
+                checked = time.monotonic() + 5
+            time.sleep(1)
+
+
 def php_front(private):
     # Fixed socket origin only; client input can never choose a destination.
     source = r'''<?php
@@ -227,9 +284,12 @@ curl_close($curl);
 
 if __name__ == "__main__":
     check_private()
-    if len(sys.argv) != 3 or sys.argv[1] not in ("start", "stop", "run"):
-        raise SystemExit("Usage: socket_gateway.py start|stop|run vX.Y.Z")
+    if sys.argv[1:] == ["supervise"]:
+        supervise()
+        raise SystemExit(0)
+    if len(sys.argv) != 3 or sys.argv[1] not in ("start", "stop", "run", "request"):
+        raise SystemExit("Usage: socket_gateway.py supervise | start|stop|run|request vX.Y.Z")
     with open(PRIVATE / "gateway.lock", "a") as lock:
-        if sys.argv[1] != "run":
+        if sys.argv[1] not in ("run", "request"):
             fcntl.flock(lock, fcntl.LOCK_EX)
-        {"start": start, "stop": stop, "run": serve}[sys.argv[1]](sys.argv[2])
+        {"start": start, "stop": stop, "run": serve, "request": request}[sys.argv[1]](sys.argv[2])

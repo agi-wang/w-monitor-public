@@ -754,8 +754,13 @@ async function readAvailability() {
     }));
     $("uptime-create").disabled = !data.service_probes_enabled;
     $("uptime-consent").textContent = data.service_probes_enabled ? t("此设备已允许服务探测；新配置在下次上报时接收。") : t("请在设备本机手动更新 Agent，并使用原配置加 --enable-service-probes 启动，允许作为服务探针。");
-  } catch(error) { if (uptimeDevice === selectedDevice) $("uptime-status").textContent = error.message; }
-  finally { uptimeBusy = false; }
+  } catch(error) {
+    if (uptimeDevice === selectedDevice) {
+      $("uptime-status").textContent = error.message;
+      if (error.status === 404 && selected !== "device") $("uptime-monitor").value = "device";
+      else if (error.status === 404) $("uptime-dialog").close();
+    }
+  } finally { uptimeBusy = false; }
 }
 async function showAvailability(device) {
   uptimeDevice = device; $("uptime-title").textContent = device.name;
@@ -763,7 +768,7 @@ async function showAvailability(device) {
   $("uptime-status").textContent = t("正在读取服务端历史…"); $("uptime-dialog").showModal();
   await readAvailability(); if (uptimeDevice !== device || !$("uptime-dialog").open) return; clearInterval(uptimePoll); uptimePoll = setInterval(() => void readAvailability(), 5000);
 }
-$("uptime-dialog").addEventListener("close", () => { clearInterval(uptimePoll); uptimeDevice = undefined; $("uptime-monitors").replaceChildren(); $("uptime-charts").replaceChildren(); });
+$("uptime-dialog").addEventListener("close", () => { clearInterval(uptimePoll); uptimeDevice = undefined; $("uptime-monitors").replaceChildren(); $("uptime-charts").replaceChildren(); $("uptime-events").replaceChildren(); $("uptime-form").reset(); $("uptime-title").textContent = ""; $("uptime-summary").textContent = ""; });
 $("uptime-monitor").onchange = () => void readAvailability();
 $("uptime-range").onchange = () => void readAvailability();
 $("uptime-form").onsubmit = event => { event.preventDefault(); void run(async () => {
