@@ -69,4 +69,4 @@ echo 'Updates remain manual. Stop/restart your own process to use the new binary
 if [ -n "$public_origin" ]; then
   exec "$binary_dir/w-monitor-lite" --public "$public_origin" --language "$language" "${agent_args[@]}"
 fi
-if [ "${#agent_args[@]}" -gt 0 ]; then exec "$binary_dir/w-monitor-lite" "${agent_args[@]}"; fi
+if [ "${#agent_args[@]}" -gt 0 ]; then exec "$binary_dir/w-monitor-lite" --language "$language" "${agent_args[@]}"; fi
