@@ -378,9 +378,12 @@ def device_proof(environ, expected):
         verify_signature(public_key, environ.get("HTTP_X_WM_SIGNATURE", ""), message)
     except (ValueError, KeyError, TypeError):
         raise Rejected(401, "设备签名验证失败") from None
-    # One timestamp slot per key: constant replay-cache memory per device.
+    # Binding lookup has its own slot: a query from another clock/process must
+    # not advance the high-water mark of an already running reporting Agent.
+    # Keep the established report key unchanged across receiver upgrades.
     script = "local old=redis.call('GET',KEYS[1]); if old and tonumber(old)>=tonumber(ARGV[1]) then return 0 end; redis.call('SET',KEYS[1],ARGV[1],'EX',600); return 1"
-    accepted = CACHE.command("EVAL", script, 1, NAMESPACE + "signed:" + digest(public_key + environ["HTTP_AUTHORIZATION"][7:]), timestamp)
+    scope = "signed-binding:" if environ["PATH_INFO"] == "/api/v1/binding" else "signed:"
+    accepted = CACHE.command("EVAL", script, 1, NAMESPACE + scope + digest(public_key + environ["HTTP_AUTHORIZATION"][7:]), timestamp)
     if accepted != 1:
         raise Rejected(503 if accepted is None else 401, "设备上报签名已过期或重复")
     return public_key

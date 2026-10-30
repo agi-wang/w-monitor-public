@@ -311,7 +311,9 @@ space and, when an agent ID is supplied, that device in the same space. A device
 with a bound public key must sign this request using the existing device signature
 headers and canonical envelope, with `POST`, `/api/v1/binding`, `full`, `identity`
 and the exact request-body SHA-256. Existing report signatures are unchanged;
-signatures cannot be replayed across paths. Legacy unsigned devices remain
+signatures cannot be replayed across paths. Binding queries use a separate
+replay timestamp slot so they cannot suppress reports from a running Agent; the
+existing reporting replay keys remain unchanged. Legacy unsigned devices remain
 compatible until their normal signed report binds a key.
 
 The response contains `status: "ok"`, `receiver_origin`, `region_id`,
