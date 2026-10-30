@@ -1,4 +1,4 @@
-# Public monitoring contract v1.3.6
+# Public monitoring contract v1.3.7
 
 [OpenAPI](server/openapi.json) describes browser, ingestion and public-status APIs.
 This receiver implements the existing v1.0 full report envelope; it has no Private
