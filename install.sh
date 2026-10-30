@@ -21,7 +21,7 @@ while [ "$#" -gt 0 ]; do
     --public) [ "$#" -ge 2 ] || exit 2; public_origin="$2"; shift 2 ;;
     --language) [ "$#" -ge 2 ] || exit 2; language="$2"; shift 2 ;;
     v*) [ -z "$version" ] || exit 2; version="$1"; shift ;;
-    *) echo 'Usage: install.sh [vX.Y.Z] [--public https://monitor.example.com | --key KEY] [--endpoint URL] [--config FILE] [--language en|zh-CN] [--verify-provenance]' >&2; exit 2 ;;
+    *) echo 'Usage: install.sh [vX.Y.Z] [--public https://monitor.example.com | --key KEY] [--endpoint URL] [--config FILE] [--language en|zh-CN] [--verify-provenance] [--enable-service-probes]' >&2; exit 2 ;;
   esac
 done
 case "$language" in en|zh-CN) ;; *) echo 'Unsupported language' >&2; exit 2 ;; esac

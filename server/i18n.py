@@ -3,6 +3,11 @@ import html
 import re
 
 EN = {
+    '探测超时': 'Check timed out',
+    '连接或 TLS 失败': 'Connection or TLS failed',
+    '探针离线': 'Probe offline',
+    '等待配置': 'Waiting for configuration',
+    '等待探测': 'Waiting for check',
     '无效可用性查询': 'Invalid availability query',
     '服务探测不存在': 'Service monitor not found',
     '无效探针设备': 'Invalid probe device',

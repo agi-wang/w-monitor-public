@@ -51,7 +51,7 @@ def validate_probe(value):
     if not isinstance(value, dict) or set(value) != {"name", "kind", "target", "interval_seconds", "timeout_seconds"}:
         raise ValueError("Invalid service monitor fields")
     name, kind, target = value["name"], value["kind"], value["target"]
-    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80 or not isinstance(target, str) or len(target) > 2048 or any(ord(c) < 32 or ord(c) == 127 for c in name + target):
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80 or not isinstance(target, str) or len(target) > 2048 or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in name + target):
         raise ValueError("Invalid service name or target")
     if type(value["interval_seconds"]) is not int or not 60 <= value["interval_seconds"] <= 3600 or type(value["timeout_seconds"]) is not int or not 1 <= value["timeout_seconds"] <= 10:
         raise ValueError("Invalid service probe interval or timeout")

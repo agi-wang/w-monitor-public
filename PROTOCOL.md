@@ -341,7 +341,8 @@ and need a local manual update to gain probing; they receive no new commands.
 A signed Agent advertises `metadata.capabilities["telemetry.service_probes"]=true`.
 The normal report response may then include a separate `service_probes` object:
 `{revision,probes:[{id,kind,target,interval_seconds,timeout_seconds}]}`. It does not
-extend the existing two-boolean `agent_config`, preserving older clients.
+extend the existing two-boolean `agent_config`, preserving older clients. Once the
+Agent acknowledges the current revision, this object is omitted until it changes.
 Only HTTP(S) GET and TCP connect are accepted, with no shell, custom headers,
 credentials, query, fragment, redirects or response-body collection. HTTP status
 200-399 means the first endpoint responds successfully; redirects are not followed.

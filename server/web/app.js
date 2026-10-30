@@ -749,7 +749,8 @@ async function readAvailability() {
     }));
     $("uptime-events").replaceChildren(...data.events.map(event => node("p", new Date(event.at * 1000).toLocaleString(locale) + " · " + availabilityLabel(event.previous) + " → " + availabilityLabel(event.state))));
     $("uptime-monitors").replaceChildren(...data.monitors.map(m => {
-      const card = node("div", undefined, "settings-row"); card.append(node("span", `${m.name} · ${m.kind.toUpperCase()} · ${m.target} · ${availabilityLabel(m.state)}${typeof m.latency_ms === "number" ? " · " + m.latency_ms + " ms" : ""}`));
+      const reason = {timeout:"探测超时",connection_or_tls:"连接或 TLS 失败",probe_offline:"探针离线",configuration_pending:"等待配置",awaiting_check:"等待探测"}[m.reason];
+      const card = node("div", undefined, "settings-row"); card.append(node("span", `${m.name} · ${m.kind.toUpperCase()} · ${m.target} · ${availabilityLabel(m.state)}${typeof m.latency_ms === "number" ? " · " + m.latency_ms + " ms" : ""}${Number.isInteger(m.status_code) ? " · HTTP " + m.status_code : ""}${reason ? " · " + t(reason) : ""}`));
       card.append(button(t("删除"), async () => { if (!confirm(t("删除此服务探测及其历史记录？"))) return; await api("/api/services/delete", {device_id:selectedDevice.id,id:m.id}); if ($("uptime-monitor").value === m.id) $("uptime-monitor").value = "device"; await readAvailability(); }, "quiet")); return card;
     }));
     $("uptime-create").disabled = !data.service_probes_enabled;

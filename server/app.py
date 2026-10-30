@@ -744,7 +744,8 @@ def receive(db, environ):
     probe_config = probe_configuration(db, BOX, device_id) if metadata["service_probes_enabled"] else None
     probe_report = report.get("service_probes")
     if metadata["service_probes_enabled"] and signed_key:
-        reply["service_probes"] = probe_config
+        if not isinstance(probe_report, dict) or probe_report.get("revision") != probe_config["revision"]:
+            reply["service_probes"] = probe_config
         if isinstance(probe_report, dict) and probe_report.get("revision") == probe_config["revision"] and isinstance(probe_report.get("results"), list):
             allowed = {probe["id"]: probe for probe in probe_config["probes"]}
             results = {}

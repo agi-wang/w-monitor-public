@@ -918,6 +918,11 @@ async fn main() -> Result<()> {
     }
     let service_probes_enabled =
         args.enable_service_probes || config["enable_service_probes"].as_bool() == Some(true);
+    if args.language == "zh-CN" {
+        println!("本机服务探针 (--enable-service-probes): {service_probes_enabled}");
+    } else {
+        println!("Local service probes (--enable-service-probes): {service_probes_enabled}");
+    }
     let probe_state = Arc::new(Mutex::new(service_probes::State::default()));
     if service_probes_enabled {
         if let (Some(revision), Ok(probes)) = (
