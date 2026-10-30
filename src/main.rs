@@ -53,6 +53,9 @@ struct Args {
     /// Owner-only JSON config; contains endpoint_url, auth_token and optional agent_id/interval.
     #[arg(long, default_value_os_t = default_config_path())]
     config: PathBuf,
+    /// Query the current binding without collecting, registering or changing configuration.
+    #[arg(long, conflicts_with_all = ["key", "public"])]
+    show_binding: bool,
     /// Fixed receiver URL. Used with --key to configure this device.
     #[arg(long, default_value = "https://monitor.20290708.xyz/api/v1/report")]
     endpoint: String,
@@ -472,6 +475,195 @@ async fn response_json(response: reqwest::Response) -> Result<Value> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
+async fn show_binding(config: &Value, path: &Path, language: &str, allow_local_http: bool) -> bool {
+    let chinese = language == "zh-CN";
+    println!(
+        "{}: {:?}",
+        if chinese {
+            "当前配置"
+        } else {
+            "Current configuration"
+        },
+        path
+    );
+    let result: Result<Value> = async {
+        let mut endpoint = url::Url::parse(
+            config["endpoint_url"]
+                .as_str()
+                .context("Missing endpoint_url")?,
+        )?;
+        if !(endpoint.scheme() == "https"
+            || allow_local_http
+                && endpoint.scheme() == "http"
+                && matches!(
+                    endpoint.host_str(),
+                    Some("127.0.0.1" | "[::1]" | "localhost")
+                ))
+            || endpoint.host_str().is_none()
+            || !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+        {
+            bail!("Invalid configured receiver");
+        }
+        let origin = endpoint.origin().ascii_serialization();
+        println!(
+            "{}: {origin}",
+            if chinese {
+                "本地记录的节点"
+            } else {
+                "Locally configured receiver"
+            }
+        );
+        if let Some(agent) = config["agent_id"].as_str() {
+            println!(
+                "{}: {agent:?}",
+                if chinese {
+                    "本地设备 ID"
+                } else {
+                    "Local device ID"
+                }
+            );
+        }
+        endpoint.set_path("/api/v1/binding");
+        let token = config["auth_token"]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control))
+            .context("Missing or invalid auth_token")?;
+        let body = serde_json::to_vec(&json!({"agent_id": config["agent_id"]}))?;
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+        let mut request = client
+            .post(endpoint.clone())
+            .bearer_auth(token)
+            .header("Content-Type", "application/json")
+            .header("Accept-Language", language);
+        if let Some(seed) = config["device_private_key"].as_str() {
+            for (name, value) in
+                keys::SigningKey::from_seed(seed)?.headers(&endpoint, token, &body, false, false)?
+            {
+                request = request.header(name, value);
+            }
+        }
+        let value = response_json(request.body(body).send().await?).await?;
+        if value["status"] != "ok" || value["receiver_origin"].as_str() != Some(origin.as_str()) {
+            bail!("Invalid binding response");
+        }
+        println!(
+            "{}: {origin}",
+            if chinese {
+                "服务端已确认的节点"
+            } else {
+                "Receiver confirmed by server"
+            }
+        );
+        println!(
+            "{}: {:?}",
+            if chinese {
+                "监控空间"
+            } else {
+                "Monitoring space"
+            },
+            value["space"]["title"]
+                .as_str()
+                .context("Missing space title")?
+        );
+        if let Some(device) = value["device"].as_object() {
+            println!(
+                "{}: {:?}",
+                if chinese {
+                    "已接入设备"
+                } else {
+                    "Registered device"
+                },
+                device.get("name").and_then(Value::as_str).unwrap_or("")
+            );
+        } else {
+            println!(
+                "{}",
+                if chinese {
+                    "空间已存在，设备尚未完成接入。"
+                } else {
+                    "The space exists; device registration has not completed."
+                }
+            );
+        }
+        if let Some(at) = value["last_report_at"].as_u64() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs();
+            println!(
+                "{}: {} s",
+                if chinese {
+                    "距上次上报"
+                } else {
+                    "Time since last report"
+                },
+                now.saturating_sub(at)
+            );
+        } else {
+            println!(
+                "{}",
+                if chinese {
+                    "暂无可确认的最近上报时间。"
+                } else {
+                    "No recent report time is available."
+                }
+            );
+        }
+        if let Some(pages) = value["public_pages"].as_array() {
+            for page in pages.iter().take(5) {
+                if let Some(raw) = page["url"].as_str() {
+                    if let Ok(url) = url::Url::parse(raw) {
+                        if url.origin().ascii_serialization() == origin
+                            && url.path().starts_with("/status/wm1_")
+                            && url.query().is_none()
+                            && url.fragment().is_none()
+                            && url.username().is_empty()
+                            && url.password().is_none()
+                        {
+                            println!(
+                                "{}: {url}",
+                                if chinese {
+                                    "当前设备公开页面"
+                                } else {
+                                    "This device's public page"
+                                }
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        println!(
+            "{}: {origin}",
+            if chinese {
+                "账号／恢复口令登录入口"
+            } else {
+                "Account / recovery sign-in"
+            }
+        );
+        Ok(value)
+    }
+    .await;
+    if let Err(error) = result {
+        eprintln!(
+            "{}: {error}",
+            if chinese {
+                "在线查询未能确认绑定；以上仅为本地记录，未创建或修改设备"
+            } else {
+                "Online binding could not be confirmed; local records only, no device was created or changed"
+            }
+        );
+        return false;
+    }
+    true
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = Args::parse();
@@ -480,6 +672,19 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
     let _ = rustls::crypto::ring::default_provider().install_default();
+    if args.show_binding {
+        if show_binding(
+            &read_config(&args.config)?,
+            &args.config,
+            &args.language,
+            args.allow_local_http,
+        )
+        .await
+        {
+            return Ok(());
+        }
+        bail!("Binding query was not confirmed");
+    }
     let parent = args
         .config
         .parent()
@@ -502,6 +707,9 @@ async fn main() -> Result<()> {
                 if value["endpoint_url"].as_str()
                     != Some(format!("{}/api/v1/report", origin.trim_end_matches('/')).as_str())
                 {
+                    let confirmed =
+                        show_binding(&value, &args.config, &args.language, args.allow_local_http)
+                            .await;
                     let target = url::Url::parse(origin)?;
                     let receiver = target.origin().ascii_serialization();
                     let existing = value["endpoint_url"]
@@ -533,9 +741,14 @@ async fn main() -> Result<()> {
                         }
                     }
                     if args.language == "zh-CN" {
-                        bail!("此配置已绑定其他接收端，原设备凭据已保留。\n配置文件 (--config): {:?}\n当前接收端: {existing}\n请求接收端 (--public): {receiver}\n接入新节点请使用独立配置文件，执行：\n{command}", args.config);
+                        println!("请求的节点: {receiver}\n继续当前节点采集，无需重新安装：\n{} --config {} --language 'zh-CN'\n仅当确实需要接入新节点时，使用独立配置：\n{command}", quote(&std::env::current_exe()?.to_string_lossy()), quote(&args.config.to_string_lossy()));
+                    } else {
+                        println!("Requested receiver: {receiver}\nResume the existing receiver without reinstalling:\n{} --config {} --language 'en'\nOnly to join another node, use a separate config:\n{command}", quote(&std::env::current_exe()?.to_string_lossy()), quote(&args.config.to_string_lossy()));
                     }
-                    bail!("Existing device belongs to another receiver; its credentials were preserved.\nConfig file (--config): {:?}\nCurrent receiver: {existing}\nRequested receiver (--public): {receiver}\nUse a separate config to join this node:\n{command}", args.config);
+                    if confirmed {
+                        return Ok(());
+                    }
+                    bail!("Could not confirm the existing binding at {existing}; configuration preserved");
                 }
                 value
             }
@@ -623,6 +836,9 @@ async fn main() -> Result<()> {
         bail!("Config directory must be owned by the current user and not writable by group or others");
     }
     let config = read_config(&args.config)?;
+    if config["agent_id"].as_str().is_some() {
+        show_binding(&config, &args.config, &args.language, args.allow_local_http).await;
+    }
     let endpoint_text = config["endpoint_url"]
         .as_str()
         .context("endpoint_url is required")?;

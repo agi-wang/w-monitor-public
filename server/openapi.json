@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "W Monitor Public API",
-    "version": "1.3.7",
+    "version": "1.3.8",
     "description": "Independent read-only telemetry receiver. No host-control APIs, update executors or private W Monitor dependencies. Recovery and registration secrets are shown once and persisted only as SHA-256 digests. Monitoring-space management does not operate monitored hosts. Dynamic telemetry lives only in encrypted Redis; SQLite holds durable user/space metadata, credential digests and notification delivery bookkeeping. Missing Redis is unknown, never a SQLite telemetry fallback. AES-GCM addresses are purpose-bound and never replace authentication. The backend negotiates zh-CN/en with Accept-Language and returns Content-Language; unsupported languages fall back to en. User/host text is preserved."
   },
   "servers": [
@@ -3078,6 +3078,149 @@
           }
         },
         "description": "Rechecks page enabled, device selection and all visibility flags on every request. Disabled metric columns and tuple values are removed even from cached data and old refs. History requires opt-in and at least one enabled metric."
+      }
+    },
+    "/api/v1/binding": {
+      "post": {
+        "summary": "Query the current device binding without registration or telemetry writes",
+        "description": "Authenticated telemetry credential lookup. Bound device keys require existing device-signature headers over POST /api/v1/binding, full, identity, and the exact body hash. Legacy unsigned devices remain compatible. Returns only this device and dedicated single-device enabled public pages; never management/recovery capabilities or other device data. Lookup does not update heartbeat, rotate credentials, register or move devices.",
+        "security": [
+          {
+            "ReportBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "agent_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 255,
+                    "description": "UTF-8 length must also be at most 255 bytes; if supplied for a device token, must match that device."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Current binding; unavailable telemetry has null last_report_at.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "receiver_origin",
+                    "region_id",
+                    "space",
+                    "device",
+                    "dashboard_url",
+                    "public_pages",
+                    "last_report_at"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "ok"
+                    },
+                    "receiver_origin": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "region_id": {
+                      "type": "string"
+                    },
+                    "space": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "title"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "device": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "agent_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "dashboard_url": {
+                      "type": "string",
+                      "format": "uri",
+                      "description": "Login origin only; conveys no management authorization."
+                    },
+                    "public_pages": {
+                      "type": "array",
+                      "maxItems": 5,
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "title",
+                          "url"
+                        ],
+                        "properties": {
+                          "title": {
+                            "type": "string"
+                          },
+                          "url": {
+                            "type": "string",
+                            "format": "uri"
+                          }
+                        }
+                      }
+                    },
+                    "last_report_at": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed binding query"
+          },
+          "401": {
+            "description": "Invalid/revoked credential, signature or replay"
+          },
+          "403": {
+            "description": "Device credential queried another device"
+          },
+          "404": {
+            "description": "Older receivers do not support lookup"
+          },
+          "503": {
+            "description": "Authentication replay store unavailable"
+          }
+        }
       }
     }
   }

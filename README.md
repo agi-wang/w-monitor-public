@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.3.7**; the release series starts at **v1.0.0**.
+The current release is **v1.3.8**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -138,18 +138,27 @@ log the effective cadence and switches returned by the receiver. Authentication
 tokens and signing private keys are not printed. `--language zh-CN` selects Chinese
 startup and receiver-conflict messages.
 
-A device configuration belongs to one receiver. Reusing it with another `--public`
-origin preserves the original credentials and stops with both receiver origins,
-the selected config path, and a complete command using a separate per-receiver
-config. For example:
+A device configuration belongs to one receiver. When an existing config is used
+with a different `--public` origin, the Agent first queries its original receiver.
+It prints the confirmed node, monitoring space, device, recent-report age and any
+enabled public pages dedicated to this device. It then exits without registering
+or moving anything. The primary instruction resumes collection using the existing
+config; creating a separate regional config is shown only as an optional choice.
+If the original receiver is unreachable, too old, or rejects the credential, the
+Agent clearly labels the local record as unconfirmed instead of claiming it is a
+valid binding. Normal collection can continue with older receivers.
+
+Query an installed Agent without reinstalling or collecting:
 
 ```bash
-w-monitor-lite --public https://wm-uk.myfastools.com --language zh-CN \
-  --config "$HOME/.config/w-monitor-public/receivers/wm-uk.myfastools.com/agent.json"
+w-monitor-lite --show-binding --language zh-CN
 ```
 
-The separate path creates or resumes that node's device and page. The existing
-receiver's configuration remains available for its own process.
+Add `--config /path/to/agent.json` for a non-default configuration. The read-only
+lookup never returns account identity, recovery keys, management capabilities or
+links exposing other devices. Its login entry still needs the normal account or
+recovery credential. Private keys stay on the client. A new receiver config is
+only needed when the user actually chooses a new registration.
 
 The receiver must return JSON to setup and reporting requests. If a hosting
 firewall or proxy returns an HTML page, the Agent names the affected origin and

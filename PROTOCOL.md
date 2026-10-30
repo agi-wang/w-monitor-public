@@ -1,4 +1,4 @@
-# Public monitoring contract v1.3.7
+# Public monitoring contract v1.3.8
 
 [OpenAPI](server/openapi.json) describes browser, ingestion and public-status APIs.
 This receiver implements the existing v1.0 full report envelope; it has no Private
@@ -301,3 +301,32 @@ selected metrics in canonical time/CPU/memory/disk/network-rx/network-tx order.
 With every metric disabled, effective history is off and the public history API
 returns 403. `visibility` includes cpu/memory/disk/network/history and invalidates
 view caches on changes. Owner full reports and six-column history remain intact.
+
+## Existing device binding lookup
+
+POST `/api/v1/binding` accepts a JSON object with optional `agent_id` (string or
+null, at most 255 UTF-8 bytes). It uses the existing `ReportBearer` credential.
+A `sat_` token can inspect only its own device; a `wmb_` token can query its own
+space and, when an agent ID is supplied, that device in the same space. A device
+with a bound public key must sign this request using the existing device signature
+headers and canonical envelope, with `POST`, `/api/v1/binding`, `full`, `identity`
+and the exact request-body SHA-256. Existing report signatures are unchanged;
+signatures cannot be replayed across paths. Binding queries use a separate
+replay timestamp slot so they cannot suppress reports from a running Agent; the
+existing reporting replay keys remain unchanged. Legacy unsigned devices remain
+compatible until their normal signed report binds a key.
+
+The response contains `status: "ok"`, `receiver_origin`, `region_id`,
+`space: {id,title}`, `device: {id,agent_id,name}` or null, `last_report_at` (Unix
+seconds or null), `dashboard_url` (ordinary login origin), and `public_pages`
+(up to five `{title,url}` entries). Only enabled pages whose selection contains
+exactly this device are returned. Multi-device/global pages, management tokens,
+account identifiers, recovery secrets and private keys are never returned.
+
+Lookup does not register devices, rotate tokens, bind keys, update heartbeats or
+write history. Authentication replay/rate protections still apply. Invalid or
+revoked credentials return 401; a mismatched device ID returns 403; malformed
+requests return 400; Redis unavailability during signature verification returns
+503. Missing telemetry alone returns null `last_report_at`, preserving durable
+binding information. Old receivers return 404 and clients label lookup unconfirmed
+while preserving their existing configuration and normal report compatibility.
