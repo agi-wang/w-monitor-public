@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.3.8**; the release series starts at **v1.0.0**.
+The current release is **v1.3.9**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -23,7 +23,18 @@ curl -fsSL --proto '=https' --max-time 30 \
   | bash -s -- --public https://monitor.20290708.xyz --language en
 ```
 
-This downloads the Linux Agent and checksum from the public GitHub Release, checks SHA-256,
+When an existing configuration is found, the installer **first queries its original
+receiver** and prints the current receiver, device, public page and last report.
+No `--show-binding` flag needs to be remembered. Choose to keep the current
+installation, manually update while retaining its configuration, or join a new
+receiver using a separate configuration. Keep/update do not start a duplicate
+process; update prints the restart command. With piped installation, choices are
+read from the terminal, not stdin. Without a terminal, information is printed and
+the installer exits without downloading, replacing or registering anything.
+Older Agents or unavailable receivers are explicitly shown as unconfirmed;
+choosing manual update enables the new lookup without changing the old binding.
+
+For a new configuration, this downloads the Linux Agent and checksum from the public GitHub Release, checks SHA-256,
 creates an anonymous space and public page, saves a private configuration, and
 starts the Agent. The terminal prints a recovery key, management URL, and public
 URL. The first connected device is selected for the initial public page.
