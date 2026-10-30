@@ -365,7 +365,7 @@ def grant_space(db, session, space_id):
     return {"ok": True}, [cookie_header(token)]
 
 
-def device_proof(environ, expected):
+def device_proof(environ, expected, path="/api/v1/report"):
     public_key = environ.get("HTTP_X_WM_PUBLIC_KEY", "")
     if not public_key and not expected:
         return None
@@ -374,7 +374,7 @@ def device_proof(environ, expected):
     try:
         if expected and public_key != expected or not re.fullmatch(r"[0-9]{13,16}", timestamp) or abs(int(timestamp) - int(time.time() * 1000)) > 300000 or not re.fullmatch(r"[a-f0-9]{32}", nonce):
             raise ValueError()
-        message = "\n".join(["wm-device-v1", ORIGIN, environ["REQUEST_METHOD"], environ["PATH_INFO"], environ.get("HTTP_X_WM_REPORT_KIND", "full"), environ.get("HTTP_CONTENT_ENCODING", environ.get("CONTENT_ENCODING", "identity")), digest(environ["HTTP_AUTHORIZATION"][7:]), timestamp, nonce, environ["wm.body_sha256"]])
+        message = "\n".join(["wm-device-v1", ORIGIN, "POST", path, environ.get("HTTP_X_WM_REPORT_KIND", "full"), environ.get("HTTP_CONTENT_ENCODING", environ.get("CONTENT_ENCODING", "identity")), digest(environ["HTTP_AUTHORIZATION"][7:]), timestamp, nonce, environ["wm.body_sha256"]])
         verify_signature(public_key, environ.get("HTTP_X_WM_SIGNATURE", ""), message)
     except (ValueError, KeyError, TypeError):
         raise Rejected(401, "设备签名验证失败") from None
@@ -382,7 +382,7 @@ def device_proof(environ, expected):
     # not advance the high-water mark of an already running reporting Agent.
     # Keep the established report key unchanged across receiver upgrades.
     script = "local old=redis.call('GET',KEYS[1]); if old and tonumber(old)>=tonumber(ARGV[1]) then return 0 end; redis.call('SET',KEYS[1],ARGV[1],'EX',600); return 1"
-    scope = "signed-binding:" if environ["PATH_INFO"] == "/api/v1/binding" else "signed:"
+    scope = "signed-binding:" if path == "/api/v1/binding" else "signed:"
     accepted = CACHE.command("EVAL", script, 1, NAMESPACE + scope + digest(public_key + environ["HTTP_AUTHORIZATION"][7:]), timestamp)
     if accepted != 1:
         raise Rejected(503 if accepted is None else 401, "设备上报签名已过期或重复")
@@ -599,7 +599,7 @@ def device_binding(db, environ):
     space_id = machine["space_id"] if machine else space["id"]
     row = db.execute("SELECT id,agent_id,name FROM devices WHERE id=?", (machine["id"],)).fetchone() if machine else db.execute("SELECT id,agent_id,name FROM devices WHERE space_id=? AND agent_id=?", (space_id, agent)).fetchone()
     bound = db.execute("SELECT public_key FROM device_keys WHERE device_id=?", (row["id"],)).fetchone() if row else None
-    device_proof(environ, bound[0] if bound else None)
+    device_proof(environ, bound[0] if bound else None, path="/api/v1/binding")
     current = db.execute("SELECT id,title FROM spaces WHERE id=?", (space_id,)).fetchone()
     if not current:
         raise Rejected(401, "上报凭据无效或已吊销")
