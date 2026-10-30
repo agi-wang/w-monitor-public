@@ -3,6 +3,9 @@ import html
 import re
 
 EN = {
+    '持续约 {minutes} 分钟': 'About {minutes} minutes in this state',
+    '观测故障约 {minutes} 分钟': 'Observed outage: about {minutes} minutes',
+
     '探测超时': 'Check timed out',
     '连接或 TLS 失败': 'Connection or TLS failed',
     '探针离线': 'Probe offline',

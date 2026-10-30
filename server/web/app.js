@@ -740,14 +740,18 @@ async function readAvailability() {
     if (uptimeDevice !== selectedDevice || generation !== requestGeneration || $("uptime-monitor").value !== selected || $("uptime-range").value !== range) return;
     const options = [Object.assign(node("option", t("设备在线率")), {value:"device"}), ...data.monitors.map(m => Object.assign(node("option", m.name), {value:m.id}))];
     $("uptime-monitor").replaceChildren(...options); $("uptime-monitor").value = selected;
-    $("uptime-status").textContent = t("当前状态") + ": " + availabilityLabel(data.state) + (data.state_since ? " · " + new Date(data.state_since * 1000).toLocaleString(locale) : "");
+    $("uptime-status").textContent = t("当前状态") + ": " + availabilityLabel(data.state) + (data.state_since ? " · " + new Date(data.state_since * 1000).toLocaleString(locale) + " · " + t("持续约 {minutes} 分钟", {minutes:Math.max(0,Math.floor((Date.now()/1000-data.state_since)/60))}) : "");
     const history = data.history, rate = history.availability_percent === null ? "—" : history.availability_percent.toFixed(3) + "%";
     $("uptime-summary").textContent = t("已知采样可用率") + ": " + rate + " · " + t("覆盖率") + ": " + history.coverage_percent.toFixed(1) + "% · " + t("每分钟记录；缺失区间保留未知，超过 24 小时按小时聚合。") + (data.worker_available ? "" : " · " + t("历史记录任务尚未运行或已延迟。"));
     const points = history.points.map(row => Object.fromEntries(history.columns.map((key, index) => [key, row[index]])));
     $("uptime-charts").replaceChildren(...[["up_percent", "可用率"], ["latency_ms", "响应时间"]].map(([key,label]) => {
       const card = node("section", undefined, "chart-card"); card.append(node("h3", t(label)), metricPlot(points, [key], [t(label)], false, history)); return card;
     }));
-    $("uptime-events").replaceChildren(...data.events.map(event => node("p", new Date(event.at * 1000).toLocaleString(locale) + " · " + availabilityLabel(event.previous) + " → " + availabilityLabel(event.state))));
+    $("uptime-events").replaceChildren(...data.events.map((event,index) => {
+      const ended = index > 0 && data.events[index-1].previous === event.state ? data.events[index-1].at : index === 0 && data.state === event.state && data.worker_available ? Date.now()/1000 : null;
+      const duration = event.state === "down" && ended !== null ? " · " + t("观测故障约 {minutes} 分钟", {minutes:Math.max(0,Math.floor((ended-event.at)/60))}) : "";
+      return node("p", new Date(event.at * 1000).toLocaleString(locale) + " · " + availabilityLabel(event.previous) + " → " + availabilityLabel(event.state) + duration);
+    }));
     $("uptime-monitors").replaceChildren(...data.monitors.map(m => {
       const reason = {timeout:"探测超时",connection_or_tls:"连接或 TLS 失败",probe_offline:"探针离线",configuration_pending:"等待配置",awaiting_check:"等待探测"}[m.reason];
       const card = node("div", undefined, "settings-row"); card.append(node("span", `${m.name} · ${m.kind.toUpperCase()} · ${m.target} · ${availabilityLabel(m.state)}${typeof m.latency_ms === "number" ? " · " + m.latency_ms + " ms" : ""}${Number.isInteger(m.status_code) ? " · HTTP " + m.status_code : ""}${reason ? " · " + t(reason) : ""}`));
