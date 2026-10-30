@@ -25,7 +25,7 @@ from redis_cache import RedisCache, MetricHistory
 from encryption import SealedData, verify_signature
 from i18n import EN, language, render_html, translate
 
-VERSION = "1.3.7"
+VERSION = "1.3.8"
 SOURCE_RELEASE = Path(__file__).resolve().parents[1].name
 MAX_BODY = 8 * 1024 * 1024
 WEB = Path(__file__).resolve().parent / "web"
@@ -374,7 +374,7 @@ def device_proof(environ, expected):
     try:
         if expected and public_key != expected or not re.fullmatch(r"[0-9]{13,16}", timestamp) or abs(int(timestamp) - int(time.time() * 1000)) > 300000 or not re.fullmatch(r"[a-f0-9]{32}", nonce):
             raise ValueError()
-        message = "\n".join(["wm-device-v1", ORIGIN, "POST", "/api/v1/report", environ.get("HTTP_X_WM_REPORT_KIND", "full"), environ.get("HTTP_CONTENT_ENCODING", environ.get("CONTENT_ENCODING", "identity")), digest(environ["HTTP_AUTHORIZATION"][7:]), timestamp, nonce, environ["wm.body_sha256"]])
+        message = "\n".join(["wm-device-v1", ORIGIN, environ["REQUEST_METHOD"], environ["PATH_INFO"], environ.get("HTTP_X_WM_REPORT_KIND", "full"), environ.get("HTTP_CONTENT_ENCODING", environ.get("CONTENT_ENCODING", "identity")), digest(environ["HTTP_AUTHORIZATION"][7:]), timestamp, nonce, environ["wm.body_sha256"]])
         verify_signature(public_key, environ.get("HTTP_X_WM_SIGNATURE", ""), message)
     except (ValueError, KeyError, TypeError):
         raise Rejected(401, "设备签名验证失败") from None
@@ -563,7 +563,7 @@ def snapshot(db, space=None, slug=None, number=0):
     return payload
 
 
-def receive(db, environ):
+def device_credentials(db, environ):
     auth = environ.get("HTTP_AUTHORIZATION", "")
     if not auth.startswith("Bearer ") or len(auth) > 256:
         limited("invalid-report:" + environ.get("REMOTE_ADDR", ""), 3000, 60)
@@ -579,6 +579,40 @@ def receive(db, environ):
     if machine is None and space is None:
         limited("invalid-report:" + environ.get("REMOTE_ADDR", ""), 3000, 60)
         raise Rejected(401, "上报凭据无效或已吊销")
+    return credential, machine, space
+
+
+def device_binding(db, environ):
+    credential, machine, space = device_credentials(db, environ)
+    limited("device-binding:" + credential, 30, 60)
+    if environ.get("HTTP_X_WM_REPORT_KIND", "full") != "full":
+        raise Rejected(400, "无效 JSON")
+    value = body(environ, 4096)
+    agent = value.get("agent_id")
+    if agent is not None and (not isinstance(agent, str) or not 1 <= len(agent.encode()) <= 255 or agent != agent.strip() or any(ord(c) < 32 or ord(c) == 127 for c in agent)):
+        raise Rejected(400, "无效设备标识")
+    if machine and agent is not None and machine["agent_id"] != agent:
+        raise Rejected(403, "设备凭据只允许上报它自身")
+    space_id = machine["space_id"] if machine else space["id"]
+    row = db.execute("SELECT id,agent_id,name FROM devices WHERE id=?", (machine["id"],)).fetchone() if machine else db.execute("SELECT id,agent_id,name FROM devices WHERE space_id=? AND agent_id=?", (space_id, agent)).fetchone()
+    bound = db.execute("SELECT public_key FROM device_keys WHERE device_id=?", (row["id"],)).fetchone() if row else None
+    device_proof(environ, bound[0] if bound else None)
+    current = db.execute("SELECT id,title FROM spaces WHERE id=?", (space_id,)).fetchone()
+    if not current:
+        raise Rejected(401, "上报凭据无效或已吊销")
+    result = {"status": "ok", "receiver_origin": ORIGIN, "region_id": CONFIG.get("region_id", "default"), "space": {"id": current["id"], "title": current["title"]}, "device": dict(row) if row else None, "dashboard_url": ORIGIN, "public_pages": [], "last_report_at": None}
+    if row:
+        metadata, available = live_metadata([row])
+        result["last_report_at"] = metadata.get(row["id"], {}).get("received_at") if available else None
+        # A telemetry credential cannot grant access to another device, or to
+        # space management. Return only enabled pages dedicated to this device.
+        pages = db.execute("SELECT id,title,slug_ciphertext FROM pages WHERE space_id=? AND enabled=1 AND json_array_length(selection)=1 AND json_extract(selection,'$[0]')=? ORDER BY id LIMIT 5", (space_id, row["id"]))
+        result["public_pages"] = [{"title": page["title"], "url": ORIGIN + "/status/" + BOX.open("stored-link:" + page["id"], page["slug_ciphertext"])} for page in pages]
+    return result
+
+
+def receive(db, environ):
+    credential, machine, space = device_credentials(db, environ)
     limited("device-report:" + machine["id"] if machine else "bootstrap-report:" + credential, 120 if machine else 3000, 60)
     metrics = environ.get("HTTP_X_WM_REPORT_KIND") == "metrics"
     report = body(environ, 65536 if metrics else MAX_BODY, compressed=True)
@@ -779,6 +813,8 @@ def route(db, environ):
         return 200, {"available": False}, []
     if method == "POST" and path == "/api/v1/report":
         return 200, receive(db, environ), []
+    if method == "POST" and path == "/api/v1/binding":
+        return 200, device_binding(db, environ), []
     if method == "GET" and re.fullmatch(r"/api/public/status/" + LINK + "/history", path):
         slug = path.split("/")[-2]
         page_id = link_payload("public", slug)
