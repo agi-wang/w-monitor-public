@@ -211,7 +211,6 @@ class MetricHistory:
     """
     include_counts = False
     include_empty = False
-    record = struct.Struct(">H5f5H")
     fields = ("cpu_percent", "memory_percent", "disk_percent", "network_rx_bps", "network_tx_bps")
     sources = ("cpu", "memory", "disk", "network_rx_bps", "network_tx_bps")
     spans = (60, 3600, 86400)

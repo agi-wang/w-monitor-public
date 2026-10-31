@@ -451,7 +451,10 @@ function drawHistory() {
   $("report-trend-note").textContent = (points.length ? t("服务端历史 · {resolution} · {count} 个采样点", { resolution, count: points.length }) : t("该时段暂无历史采样")) + " · " + t("Redis 最长保留 {days} 天；刷新页面或换浏览器可继续查看，缺失采样留空。", { days: new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(history.max_retention_seconds / 86400) });
 }
 function drawPressureHistory(history, error) {
-  const charts = $("pressure-charts"); charts.replaceChildren();
+  const charts = $("pressure-charts");
+  // Keep the inspected sample and keyboard focus stable during live refresh.
+  if (!publicSlug && (charts.matches(":hover") || charts.contains(document.activeElement))) return;
+  charts.replaceChildren();
   if (publicSlug) return;
   const points = history?.points ?? [];
   for (const [title, indices] of pressureGroups) {
