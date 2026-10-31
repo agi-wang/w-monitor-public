@@ -94,7 +94,7 @@ def deliver_w_mail(db, item, meta, now):
     if not profile or any(meta.get(key) != value for key, value in profile.items()):
         meta["next_at"], meta["code"] = min(now + 300, item["created_at"] + 2 * 86400), "mail_config_changed"
         db.execute("UPDATE notification_outbox SET delivery=? WHERE id=?", (json.dumps(meta), item["id"]))
-        mail_log(meta, "unknown", "mail_config_changed")
+        mail_log(meta, item["status"] if item["status"] == "provider_accepted" else "unknown", "mail_config_changed")
         return  # Never repoint an old operation at another service or mailbox.
     first = not meta.get("post_started")
     if first and CONFIG.get("email_provider", "smtp") != "w-mail":
@@ -118,8 +118,9 @@ def deliver_w_mail(db, item, meta, now):
         if not first:
             meta["lookups"] += 1
         # This autocommit is the no-resubmit boundary, before any network call.
-        changed = db.execute("UPDATE notification_outbox SET status='unknown',delivery=?,attempts=attempts+?,attempted_at=CASE WHEN ? THEN ? ELSE attempted_at END WHERE id=? AND delivery=?",
-                             (json.dumps(meta), int(first), int(first), now, item["id"], old)).rowcount
+        claimed = json.dumps(meta)
+        changed = db.execute("UPDATE notification_outbox SET status=CASE WHEN status='provider_accepted' THEN status ELSE 'unknown' END,delivery=?,attempts=attempts+?,attempted_at=CASE WHEN ? THEN ? ELSE attempted_at END WHERE id=? AND delivery=?",
+                             (claimed, int(first), int(first), now, item["id"], old)).rowcount
         if not changed:
             return
         db.commit()
@@ -127,6 +128,7 @@ def deliver_w_mail(db, item, meta, now):
                           method="POST" if first else "GET", headers={"Authorization": "Bearer " + CONFIG["w_mail_api_key"],
                           "X-W-Project-Id": profile["project_id"], "Idempotency-Key": meta["operation_id"],
                           "Content-Type": "application/json", "User-Agent": "W-Monitor-Public/" + VERSION})
+        verified = {key: meta.get(key) for key in ("provider_id", "submission_status", "recipient_status")}
         try:
             # No proxy, redirects or automatic retries can forward this credential.
             with build_opener(ProxyHandler({}), NoRedirect()).open(request, timeout=5) as response:
@@ -138,11 +140,14 @@ def deliver_w_mail(db, item, meta, now):
             state, code = "unknown", {401: "mail_auth_rejected", 403: "mail_scope_rejected", 404: "mail_operation_not_visible", 429: "mail_rate_limited"}.get(error.code, "mail_http_unknown")
         except Exception:
             state, code = "unknown", "mail_transport_unknown"
-        meta["updated_at"] = int(time.time())
+        meta["updated_at"] = meta["checked_at"] = int(time.time())
+        if state == "unknown" and item["status"] == "provider_accepted":
+            state = "provider_accepted"
+            meta.update(verified)  # A failed/uncertain lookup cannot erase prior evidence.
         if state in ("delivered", "failed"):
             meta["complete"], meta["completed_at"] = True, meta["updated_at"]
         meta["code"] = code
-        db.execute("UPDATE notification_outbox SET status=?,delivery=? WHERE id=? AND status='unknown'", (state, json.dumps(meta), item["id"]))
+        db.execute("UPDATE notification_outbox SET status=?,delivery=? WHERE id=? AND delivery=?", (state, json.dumps(meta), item["id"], claimed))
         mail_log(meta, state, code)
     except Exception:
         mail_log(meta, "unknown", "mail_local_operation_failed")
@@ -190,7 +195,7 @@ def main():
         deadline = time.monotonic() + 35
         try:
             with database() as db:
-                pending = db.execute("SELECT o.*,d.name,s.email,s.notifications_enabled,s.notification_locale,n.state AS latest_state FROM notification_outbox o JOIN devices d ON d.id=o.device_id JOIN spaces s ON s.id=o.space_id LEFT JOIN notification_state n ON n.device_id=o.device_id WHERE ((o.status='pending' AND o.attempts<2 AND COALESCE(json_extract(o.delivery,'$.next_at'),0)<=?) OR (o.status IN ('unknown','provider_accepted') AND COALESCE(json_extract(o.delivery,'$.complete'),0)=0 AND COALESCE(json_extract(o.delivery,'$.next_at'),0)<=?)) AND (json_extract(o.delivery,'$.provider')='w-mail' OR ?) ORDER BY o.id LIMIT 8", (now, now, int(smtp_available()))).fetchall()
+                pending = db.execute("SELECT o.*,d.name,s.email,s.notifications_enabled,s.notification_locale,n.state AS latest_state FROM notification_outbox o LEFT JOIN devices d ON d.id=o.device_id JOIN spaces s ON s.id=o.space_id LEFT JOIN notification_state n ON n.device_id=o.device_id WHERE ((o.status='pending' AND o.attempts<2 AND COALESCE(json_extract(o.delivery,'$.next_at'),0)<=?) OR (o.status IN ('unknown','provider_accepted') AND COALESCE(json_extract(o.delivery,'$.complete'),0)=0 AND COALESCE(json_extract(o.delivery,'$.next_at'),0)<=?)) AND (json_extract(o.delivery,'$.provider')='w-mail' OR ?) ORDER BY o.id LIMIT 8", (now, now, int(smtp_available()))).fetchall()
                 for item in pending:
                     if time.monotonic() >= deadline:
                         break
@@ -199,7 +204,7 @@ def main():
                     if not posted:
                         if not available:
                             continue
-                        if not item["notifications_enabled"] or item["email"] != item["recipient"] or item["latest_state"] != item["state"]:
+                        if item["name"] is None or not item["notifications_enabled"] or item["email"] != item["recipient"] or item["latest_state"] != item["state"]:
                             db.execute("UPDATE notification_outbox SET status='superseded' WHERE id=?", (item["id"],))
                             continue
                         today = now - now % 86400

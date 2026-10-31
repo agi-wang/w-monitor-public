@@ -264,7 +264,10 @@ jobs:
           python3 -c 'import json,os,sys; h=json.load(open(sys.argv[1])); assert h["release_tag"] == os.environ["RELEASE_TAG"] and h["host_control_enabled"] is False and h["cache"] == "redis" and h["email_channel"] == "w-mail" and h["email_channel_configured"] is True' "$temporary/health.json"
           mkdir "$temporary/website"
           for file in w-monitor-lite-linux-amd64 w-monitor-lite-linux-amd64.sha256 w-monitor-lite-linux-arm64 w-monitor-lite-linux-arm64.sha256 install.sh install.sh.sha256; do
-            curl -fsS --proto '=https' --tlsv1.2 --tls-max 1.2 --max-time 90 --retry 2 \
+            artifact_download_timeout=90
+            # Fiber's measured bandwidth needs more than 90s for the full binary.
+            case "$file" in w-monitor-lite-linux-amd64|w-monitor-lite-linux-arm64) artifact_download_timeout=240 ;; esac
+            curl -fsS --proto '=https' --tlsv1.2 --tls-max 1.2 --max-time "$artifact_download_timeout" --retry 2 \
               "$PUBLIC_ORIGIN/downloads/$RELEASE_TAG/$file" -o "$temporary/website/$file"
           done
           (cd "$temporary/website" && sha256sum -c w-monitor-lite-linux-amd64.sha256 && sha256sum -c w-monitor-lite-linux-arm64.sha256 && sha256sum -c install.sh.sha256)

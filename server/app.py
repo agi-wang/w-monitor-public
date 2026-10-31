@@ -26,7 +26,7 @@ from encryption import SealedData, verify_signature
 from metrics import AvailabilityHistory, configuration as probe_configuration, validate_probe, probe_status
 from i18n import EN, language, render_html, translate
 
-VERSION = "1.4.3"
+VERSION = "1.4.4"
 SOURCE_RELEASE = Path(__file__).resolve().parents[1].name
 MAX_BODY = 8 * 1024 * 1024
 WEB = Path(__file__).resolve().parent / "web"
@@ -173,12 +173,11 @@ with database() as _db:
       state TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS notification_outbox(
       id INTEGER PRIMARY KEY AUTOINCREMENT, space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
-      device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+      device_id TEXT NOT NULL,
       revision INTEGER NOT NULL, state TEXT NOT NULL, recipient TEXT NOT NULL,
       created_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
       attempts INTEGER NOT NULL DEFAULT 0, attempted_at INTEGER,
       UNIQUE(device_id,revision));
-    CREATE INDEX IF NOT EXISTS notification_pending ON notification_outbox(status,created_at);
 
     """)
     _db.execute("BEGIN IMMEDIATE")
@@ -189,6 +188,23 @@ with database() as _db:
     _notification_columns = {row[1] for row in _db.execute("PRAGMA table_info(notification_outbox)")}
     if "delivery" not in _notification_columns:
         _db.execute("ALTER TABLE notification_outbox ADD COLUMN delivery TEXT")
+    if any(row["table"] == "devices" for row in _db.execute("PRAGMA foreign_key_list(notification_outbox)")):
+        # Device revocation must retain the original event association/history.
+        sequence = _db.execute("SELECT seq FROM sqlite_sequence WHERE name='notification_outbox'").fetchone()
+        _db.execute("""CREATE TABLE notification_outbox_retained(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+          device_id TEXT NOT NULL, revision INTEGER NOT NULL, state TEXT NOT NULL, recipient TEXT NOT NULL,
+          created_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+          attempts INTEGER NOT NULL DEFAULT 0, attempted_at INTEGER, delivery TEXT,
+          UNIQUE(device_id,revision))""")
+        _db.execute("INSERT INTO notification_outbox_retained SELECT id,space_id,device_id,revision,state,recipient,created_at,status,attempts,attempted_at,delivery FROM notification_outbox")
+        _db.execute("DROP TABLE notification_outbox")
+        _db.execute("ALTER TABLE notification_outbox_retained RENAME TO notification_outbox")
+        if sequence:
+            if not _db.execute("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='notification_outbox'", (sequence[0],)).rowcount:
+                _db.execute("INSERT INTO sqlite_sequence(name,seq) VALUES('notification_outbox',?)", (sequence[0],))
+    _db.execute("CREATE INDEX IF NOT EXISTS notification_pending ON notification_outbox(status,created_at)")
+    _db.execute("CREATE INDEX IF NOT EXISTS notification_space_history ON notification_outbox(space_id,id)")
     _db.commit()
 
 
@@ -252,9 +268,70 @@ def notification_target(space_id, sealed):
     raise ValueError("Invalid notification target")
 
 
-def supersede_pending_notifications(db, space_id, code):
+def supersede_pending_notifications(db, space_id, code, device_id=None):
     now = int(time.time())
-    db.execute("UPDATE notification_outbox SET status='superseded',delivery=CASE WHEN json_extract(delivery,'$.provider')='w-mail' THEN json_set(delivery,'$.complete',json('true'),'$.completed_at',?,'$.updated_at',?,'$.code',?) ELSE delivery END WHERE space_id=? AND status='pending' AND COALESCE(json_extract(delivery,'$.post_started'),0)=0", (now, now, code, space_id))
+    db.execute("UPDATE notification_outbox SET status='superseded',delivery=json_set(COALESCE(delivery,'{\"provider\":\"smtp\"}'),'$.complete',json('true'),'$.completed_at',?,'$.updated_at',?,'$.code',?) WHERE space_id=? AND status='pending' AND COALESCE(json_extract(delivery,'$.post_started'),0)=0 AND (? IS NULL OR device_id=?)", (now, now, code, space_id, device_id, device_id))
+
+
+def email_deliveries(db, space_id, environ):
+    query = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
+    if set(query) - {"before", "limit"} or any(len(values) != 1 for values in query.values()):
+        raise Rejected(400, "Invalid delivery pagination")
+    limit = query.get("limit", ["20"])[0]
+    if not re.fullmatch(r"[1-9][0-9]{0,2}", limit) or int(limit) > 100:
+        raise Rejected(400, "Invalid delivery pagination")
+    limit, before = int(limit), 9223372036854775807
+    if "before" in query:
+        try:
+            cursor = query["before"][0]
+            if len(cursor) > 512:
+                raise ValueError()
+            before = BOX.open("email-deliveries:" + space_id, cursor)
+            if type(before) is not int or not 1 <= before <= 9223372036854775807:
+                raise ValueError()
+        except ValueError:
+            raise Rejected(400, "Invalid delivery pagination") from None
+    # Deliberately do not load/decrypt recipients or render message content.
+    rows = db.execute("SELECT id,device_id,state,status,attempts,created_at,attempted_at,delivery FROM notification_outbox WHERE space_id=? AND id<? ORDER BY id DESC LIMIT ?", (space_id, before, limit + 1)).fetchall()
+    items = []
+    for row in rows[:limit]:
+        try:
+            meta = json.loads(row["delivery"]) if row["delivery"] else {}
+        except (ValueError, TypeError):
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        def identifier(key, pattern):
+            value = meta.get(key)
+            return value if isinstance(value, str) and re.fullmatch(pattern, value) else None
+        def timestamp(key):
+            value = meta.get(key)
+            return value if type(value) is int and 0 <= value <= 253402300799 else None
+        provider = "w-mail" if meta.get("provider") == "w-mail" else "smtp"
+        operation = identifier("operation_id", r"wm_[a-f0-9]{32}")
+        code = meta.get("code")
+        safe_codes = {"mail_receipt_deadline_elapsed", "mail_config_changed", "mail_identity_rebind_required", "mail_receipt_invalid", "mail_delivered", "mail_provider_failed", "mail_provider_accepted", "mail_submission_unknown", "mail_auth_rejected", "mail_scope_rejected", "mail_operation_not_visible", "mail_rate_limited", "mail_http_unknown", "mail_transport_unknown", "mail_local_operation_failed", "mail_binding_changed", "mail_unbound", "mail_notifications_disabled", "mail_device_revoked"}
+        review = meta.get("review")
+        safe_review = None
+        if isinstance(review, dict) and review.get("state") in ("pending", "approved", "rejected") and review.get("reason") == "platform_frequency":
+            safe_review = {"state": review["state"], "reason": "platform_frequency"}
+            for key in ("requestedAt", "decidedAt"):
+                if type(review.get(key)) is int and 0 <= review[key] <= 253402300799:
+                    safe_review[key] = review[key]
+        items.append({"id": row["id"], "channel": "system", "provider": provider,
+                      "deviceId": row["device_id"], "eventType": "monitor.host." + row["state"],
+                      "status": row["status"], "attempts": row["attempts"],
+                      "operationId": operation, "eventId": operation, "attemptId": operation,
+                      "jobId": identifier("job_id", r"[a-f0-9]{32}"),
+                      "providerId": identifier("provider_id", r"<[A-Za-z0-9_.-]{1,128}@(agentmail|botmail)\.myfastools\.com>"),
+                      "submissionStatus": meta.get("submission_status") if meta.get("submission_status") in ("queued", "submitting", "submitted", "unknown", "failed", "cancelled") else None,
+                      "recipientStatus": meta.get("recipient_status") if meta.get("recipient_status") in ("queued", "delivered", "bounced", "failed", "rejected", "deferred", "complained") else None,
+                      "review": safe_review, "createdAt": row["created_at"], "attemptedAt": row["attempted_at"],
+                      "checkedAt": timestamp("checked_at"), "completedAt": timestamp("completed_at"),
+                      "code": code if isinstance(code, str) and code in safe_codes else None,
+                      "checkCount": meta.get("lookups") if type(meta.get("lookups")) is int and 0 <= meta["lookups"] <= 6 else 0,
+                      "reconcileComplete": meta.get("complete") is True or row["status"] in ("sent", "delivered", "failed", "superseded")})
+    return {"items": items, "nextBefore": BOX.seal("email-deliveries:" + space_id, rows[limit - 1]["id"]) if len(rows) > limit else None}
 
 
 class Rejected(Exception):
@@ -312,7 +389,7 @@ def cookie_header(token):
     return ("Set-Cookie", f"{COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL}" + ("; Secure" if ORIGIN.startswith("https:") else ""))
 
 
-def browser_session(db, environ, create=False):
+def browser_session(db, environ, create=False, renew=True):
     raw = environ.get("HTTP_COOKIE", "")
     if len(raw) > 8192:
         raise Rejected(400, "请求头过大")
@@ -324,7 +401,7 @@ def browser_session(db, environ, create=False):
     token = jar[COOKIE].value if COOKIE in jar else ""
     session = db.execute("SELECT * FROM sessions WHERE hash=? AND expires>?", (digest(token), int(time.time()))).fetchone() if re.fullmatch(r"wms_[a-f0-9]{64}", token) else None
     if session:
-        if session["expires"] < int(time.time()) + SESSION_TTL - 86400:
+        if renew and session["expires"] < int(time.time()) + SESSION_TTL - 86400:
             db.execute("UPDATE sessions SET expires=? WHERE hash=?", (int(time.time()) + SESSION_TTL, session["hash"]))
             return dict(session), [cookie_header(token)]
         return dict(session), []
@@ -981,7 +1058,7 @@ def route(db, environ):
         return 200, history, []
     if method == "GET" and re.fullmatch(r"/api/public/status/" + LINK, path):
         return 200, snapshot(db, slug=path.rsplit("/", 1)[1], number=page_number(environ)), []
-    session, headers = browser_session(db, environ, create=path == "/api/session" and method == "GET")
+    session, headers = browser_session(db, environ, create=path == "/api/session" and method == "GET", renew=path != "/api/email/deliveries")
     if method == "GET" and path == "/api/session":
         space = db.execute("SELECT * FROM spaces WHERE id=?", (session["space_id"],)).fetchone()
         owned = db.execute("SELECT * FROM spaces WHERE owner=? ORDER BY created_at", (session["subject"],)).fetchall() if session["subject"] else []
@@ -1051,6 +1128,10 @@ def route(db, environ):
         space = current_space(db, session)
         operation_guard(environ, space)
         return 200, availability_view(db, space["id"], path.split("/")[3], environ), headers
+    if method == "GET" and path == "/api/email/deliveries":
+        space = current_space(db, session)
+        operation_guard(environ, space)
+        return 200, email_deliveries(db, space["id"], environ), headers
     if method == "GET" and path == "/api/email":
         space = current_space(db, session)
         operation_guard(environ, space)
@@ -1298,6 +1379,8 @@ def route(db, environ):
         begin_browser_write(db, session, space["id"])
         row = db.execute("SELECT id FROM devices WHERE id=? AND space_id=?", (value.get("id"), space["id"])).fetchone()
         availability_ids = uptime_identifiers(db, [row["id"]]) if row else []
+        if row:
+            supersede_pending_notifications(db, space["id"], "mail_device_revoked", row["id"])
         db.execute("DELETE FROM devices WHERE id=? AND space_id=?", (value.get("id"), space["id"]))
         db.execute("UPDATE spaces SET revision=revision+1 WHERE id=?", (space["id"],))
         db.commit()
