@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "W Monitor Public API",
-    "version": "1.4.3",
+    "version": "1.4.4",
     "description": "Independent read-only telemetry receiver. No host-control APIs, update executors or private W Monitor dependencies. Recovery and registration secrets are shown once and persisted only as SHA-256 digests. Monitoring-space management does not operate monitored hosts. Dynamic telemetry lives only in encrypted Redis; SQLite holds durable user/space metadata, credential digests and notification delivery bookkeeping. Missing Redis is unknown, never a SQLite telemetry fallback. AES-GCM addresses are purpose-bound and never replace authentication. The backend negotiates zh-CN/en with Accept-Language and returns Content-Language; unsupported languages fall back to en. User/host text is preserved."
   },
   "servers": [
@@ -1867,12 +1867,12 @@
             "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
           }
         },
-        "description": "Redirects to / after verified userinfo and session-ID rotation. Normal login does not grant host control or other users\u2019 monitoring spaces. Existing claimed spaces are recovered by verified issuer/subject identity. The anonymous space is claimed only through an explicit authenticated claim action."
+        "description": "Redirects to / after verified userinfo and session-ID rotation. Normal login does not grant host control or other users’ monitoring spaces. Existing claimed spaces are recovered by verified issuer/subject identity. The anonymous space is claimed only through an explicit authenticated claim action."
       }
     },
     "/api/devices": {
       "get": {
-        "summary": "List the current space\u2019s devices and scalar telemetry",
+        "summary": "List the current space’s devices and scalar telemetry",
         "security": [
           {
             "BrowserSession": [],
@@ -1927,7 +1927,7 @@
     },
     "/api/devices/{id}": {
       "get": {
-        "summary": "Read one owned device\u2019s complete latest snapshot",
+        "summary": "Read one owned device’s complete latest snapshot",
         "security": [
           {
             "BrowserSession": [],
@@ -3833,6 +3833,269 @@
           }
         },
         "description": "Exact selected-space/device ownership, trusted Origin, CSRF and management operation token required. Targets encrypted at rest in SQLite; all dynamic results/events/history stay in Redis. Delete revokes configuration and stored history. Target changes require delete/create with a fresh ID."
+      }
+    },
+    "/api/email/deliveries": {
+      "get": {
+        "summary": "Read retained system mail delivery history for the current monitoring space",
+        "description": "Read-only SQL query scoped to the cookie-selected space plus operation token. Available with notifications disabled, target unbound or provider unconfigured. Does not renew the session, send, retry, reconcile or mutate delivery rows. Newest ID first with opaque AES-GCM before cursor bound to the space. Limits default 20, maximum 100. Timestamps are Unix seconds; missing historical timestamps/IDs stay null. SMTP sent means relay acceptance, not verified recipient delivery; W-Mail submitted/provider_accepted is distinct from delivered. checkCount counts GET lookups; reconcileComplete also covers bounded polling exhaustion and is not a success flag. Projects use independent system sender credentials/budgets; this endpoint exposes no personal mailbox contents, recipient values/ciphertext, bodies, recovery links, keys or raw provider errors.",
+        "security": [
+          {
+            "BrowserSession": [],
+            "OperationToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            },
+            "description": "Opaque nextBefore value from the preceding page, bound to this monitoring space."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Retained system delivery records; Cache-Control no-store, private",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items",
+                    "nextBefore"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "maxItems": 100,
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "channel",
+                          "provider",
+                          "deviceId",
+                          "eventType",
+                          "status",
+                          "attempts",
+                          "operationId",
+                          "eventId",
+                          "attemptId",
+                          "jobId",
+                          "providerId",
+                          "code",
+                          "submissionStatus",
+                          "recipientStatus",
+                          "review",
+                          "createdAt",
+                          "attemptedAt",
+                          "checkedAt",
+                          "completedAt",
+                          "checkCount",
+                          "reconcileComplete"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "channel": {
+                            "const": "system"
+                          },
+                          "provider": {
+                            "enum": [
+                              "smtp",
+                              "w-mail"
+                            ]
+                          },
+                          "deviceId": {
+                            "type": "string",
+                            "pattern": "^[a-f0-9]{32}$"
+                          },
+                          "eventType": {
+                            "enum": [
+                              "monitor.host.online",
+                              "monitor.host.offline"
+                            ]
+                          },
+                          "status": {
+                            "enum": [
+                              "pending",
+                              "sending",
+                              "sent",
+                              "unknown",
+                              "provider_accepted",
+                              "delivered",
+                              "failed",
+                              "superseded"
+                            ]
+                          },
+                          "attempts": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "operationId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "eventId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "attemptId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "jobId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "providerId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "code": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "submissionStatus": {
+                            "enum": [
+                              "queued",
+                              "submitting",
+                              "submitted",
+                              "unknown",
+                              "failed",
+                              "cancelled",
+                              null
+                            ]
+                          },
+                          "recipientStatus": {
+                            "enum": [
+                              "queued",
+                              "delivered",
+                              "bounced",
+                              "failed",
+                              "rejected",
+                              "deferred",
+                              "complained",
+                              null
+                            ]
+                          },
+                          "review": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "required": [
+                              "state",
+                              "reason"
+                            ],
+                            "properties": {
+                              "state": {
+                                "enum": [
+                                  "pending",
+                                  "approved",
+                                  "rejected"
+                                ]
+                              },
+                              "reason": {
+                                "const": "platform_frequency"
+                              },
+                              "requestedAt": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "decidedAt": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          },
+                          "createdAt": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "attemptedAt": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "checkedAt": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "completedAt": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "checkCount": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 6
+                          },
+                          "reconcileComplete": {
+                            "type": "boolean"
+                          }
+                        }
+                      }
+                    },
+                    "nextBefore": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed, duplicate, unknown or out-of-range query parameter; invalid or wrong-space cursor"
+          },
+          "401": {
+            "description": "Missing or expired browser session"
+          },
+          "403": {
+            "description": "No selected space or operation token belongs to another space"
+          },
+          "404": {
+            "description": "Missing or invalid operation token"
+          },
+          "503": {
+            "description": "Storage unavailable"
+          }
+        }
       }
     }
   }

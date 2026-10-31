@@ -1,4 +1,4 @@
-# Public monitoring contract v1.4.3
+# Public monitoring contract v1.4.4
 
 [OpenAPI](server/openapi.json) describes browser, ingestion and public-status APIs.
 This receiver implements the existing v1.0 full report envelope; it has no Private
@@ -109,6 +109,37 @@ independent. `can_bind` requires a fresh trusted W-ID subject for W-Mail or a
 verified contact for SMTP. Existing cookie, operation-token, Origin and CSRF
 requirements remain. `POST /api/email/bind` still accepts only explicit enablement,
 never a target. Enabling a binding from another provider returns409 until rebind.
+
+`GET /api/email/deliveries` reads retained **system** mail history for only the
+current cookie-selected space and requires its `X-Operation-Token`. It remains
+available after disabling/unbinding notifications or removing provider settings.
+It returns `{items, nextBefore}`, ordered by decreasing outbox ID. `limit` defaults
+to20 and accepts1–100; pass the opaque, space-bound `nextBefore` as `before` for
+the next page. Invalid, repeated or unknown parameters and wrong-space cursors
+return400. No offsets or caller-selected space/recipient are accepted.
+
+Items expose `id`, `channel: "system"`, `provider`, `deviceId`, `eventType`,
+`status`, `attempts`, `operationId`, `eventId`, `attemptId`, `jobId`, `providerId`,
+`submissionStatus`, `recipientStatus`, safe `review`, `createdAt`, `attemptedAt`,
+`checkedAt`, `completedAt`, fixed `code`, `checkCount` and `reconcileComplete`.
+Times are Unix seconds; unavailable legacy times/IDs are null. `checkCount` counts
+GET receipt lookups. `reconcileComplete` means polling has stopped, including
+deadline exhaustion, failure and supersession; it is not proof of delivery.
+SMTP `sent` means relay acceptance only. W-Mail `provider_accepted`/`submitted`
+also remains distinct from recipient `delivered`; failed receipt lookups retain
+previously verified acceptance and polling remains bounded to six GETs/two days.
+
+The endpoint performs no send, retry, reconciliation, session renewal or delivery
+mutation. Its whitelist projection never decrypts recipients or renders content,
+and excludes addresses/subjects, user IDs, ciphertext, bodies, private links,
+credentials and raw provider errors. System project senders, queue budgets and
+Sent auditing remain independent of personal receiving mailboxes. Existing SMTP
+verified external contacts remain supported without creating W-ID recipients.
+Revoking a device retains its original `deviceId` and mail history. Its unposted
+pending rows become `superseded` with `mail_device_revoked`; posted W-Mail rows
+continue original-key GET reconciliation even though the device no longer exists.
+Explicit deletion of the entire monitoring space still deletes that space's
+private data, including this history. No cross-space administrator access is added.
 
 ## Platform load
 

@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.4.3**; the release series starts at **v1.0.0**.
+The current release is **v1.4.4**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -314,6 +314,23 @@ address-mode jobs retain their original GET-only reconciliation. Old unposted
 address-mode W-Mail jobs become `superseded` with `mail_identity_rebind_required`;
 new binding, disabling and unbinding also retain superseded rows instead of deleting
 pending history. No old task is converted to a new recipient or replayed.
+
+Use `GET /api/email/deliveries` with the normal browser cookie and the selected
+space's `X-Operation-Token` to inspect retained system delivery history, including
+old SMTP rows. It works when the current provider is unconfigured or notifications
+are disabled/unbound. It returns `items` and an opaque `nextBefore`; use
+`?limit=20&before=<nextBefore>` for successive pages (maximum100). Each item has
+task/event/attempt/job/provider IDs, submission/recipient/review state, timestamps,
+safe machine code, lookup count and `reconcileComplete`. Missing old metadata
+stays null. No recipients, content, private links or credentials are returned.
+This read does not send, retry, reconcile or update delivery/session records.
+These are project **system** messages; personal sender credentials and quotas are
+never used. Verified external SMTP contacts still work without a W-ID mailbox.
+Device revocation preserves its original event/device association and delivery
+history: unposted pending rows are superseded and posted W-Mail tasks continue
+original-key receipt lookups. Startup migrates the existing outbox transactionally
+to remove the device-delete cascade, preserving IDs and the sequence. Explicit
+whole-space deletion continues to remove that space's private delivery history.
 
 Provider acceptance and recipient-server delivery are separate states. Each
 operation has at most six receipt lookups and a two-day deadline; an unresolved
