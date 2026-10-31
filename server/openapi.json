@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "W Monitor Public API",
-    "version": "1.4.1",
+    "version": "1.4.3",
     "description": "Independent read-only telemetry receiver. No host-control APIs, update executors or private W Monitor dependencies. Recovery and registration secrets are shown once and persisted only as SHA-256 digests. Monitoring-space management does not operate monitored hosts. Dynamic telemetry lives only in encrypted Redis; SQLite holds durable user/space metadata, credential digests and notification delivery bookkeeping. Missing Redis is unknown, never a SQLite telemetry fallback. AES-GCM addresses are purpose-bound and never replace authentication. The backend negotiates zh-CN/en with Accept-Language and returns Content-Language; unsupported languages fall back to en. User/host text is preserved."
   },
   "servers": [
@@ -2162,7 +2162,7 @@
     },
     "/api/email": {
       "get": {
-        "summary": "Read bound verified email and delivery availability",
+        "summary": "Read notification identity binding and delivery availability",
         "security": [
           {
             "BrowserSession": [],
@@ -2171,7 +2171,57 @@
         ],
         "responses": {
           "200": {
-            "description": "Success; privileged data and status reads are no-store"
+            "description": "Success; privileged data and status reads are no-store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "email",
+                    "binding",
+                    "provider",
+                    "enabled",
+                    "can_bind",
+                    "requires_login",
+                    "requires_rebind",
+                    "delivery_available"
+                  ],
+                  "properties": {
+                    "email": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "binding": {
+                      "enum": [
+                        "w-id",
+                        "email",
+                        null
+                      ]
+                    },
+                    "provider": {
+                      "type": "string"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "can_bind": {
+                      "type": "boolean"
+                    },
+                    "requires_login": {
+                      "type": "boolean"
+                    },
+                    "requires_rebind": {
+                      "type": "boolean"
+                    },
+                    "delivery_available": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid bounded request"
@@ -2192,12 +2242,12 @@
             "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
           }
         },
-        "description": "Owner-scoped contact. can_bind requires a normal identity with email_verified=true; delivery_available requires a configured SMTP relay."
+        "description": "Space-scoped notification target; requires the existing browser session and operation token. W-Mail binds only a trusted raw subject from a successful canonical W-ID login; SMTP requires a verified identity email. can_bind reflects the selected provider. binding is w-id, email or null; email is null for w-id mode and does not disclose the centrally selected mailbox. requires_login signals a missing current raw W-ID identity; requires_rebind signals a binding from another provider. delivery_available checks local selected-provider configuration only."
       }
     },
     "/api/email/bind": {
       "post": {
-        "summary": "Bind the normal login\u2019s verified email with explicit notification consent",
+        "summary": "Bind the signed-in notification identity with explicit consent",
         "security": [
           {
             "BrowserSession": [],
@@ -2263,7 +2313,7 @@
             }
           }
         ],
-        "description": "No arbitrary recipient address is accepted. SMTP must be configured to enable delivery."
+        "description": "No caller-chosen address or user ID is accepted. W-Mail binds the original canonical W-ID OAuth subject from the current session, even without an external email; legacy sessions must log in again. SMTP binds the normal login verified email. Enabling requires a configured selected provider. Rebinding retains old pending history as superseded and does not replay old jobs."
       }
     },
     "/api/email/settings": {
@@ -2296,6 +2346,9 @@
           },
           "404": {
             "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
+          },
+          "409": {
+            "description": "Selected mail provider differs from the stored recipient binding; explicit rebind required"
           }
         },
         "requestBody": {
@@ -2333,7 +2386,7 @@
             }
           }
         ],
-        "description": "No arbitrary recipient address is accepted. SMTP must be configured to enable delivery."
+        "description": "Enable/disable the already bound notification target with existing CSRF and space checks. Enabling a target bound for another provider returns409. Disabling retains pending rows as superseded; posted W-Mail operations retain GET-only reconciliation."
       }
     },
     "/api/email/unbind": {
@@ -2399,7 +2452,7 @@
             }
           }
         ],
-        "description": "No arbitrary recipient address is accepted. SMTP must be configured to enable delivery."
+        "description": "Remove the bound target and stop new notifications. Pending records are retained as superseded history; already-posted W-Mail jobs retain their original GET-only reconciliation."
       }
     },
     "/api/device-options": {

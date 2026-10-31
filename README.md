@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.4.2**; the release series starts at **v1.0.0**.
+The current release is **v1.4.3**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -131,8 +131,8 @@ installed Agent to upgrade itself.
 - Visitors see names, online state, last report, CPU, memory and disk by default.
   Owners opt each page into default-egress rates and historical charts separately.
   IP addresses, process details, inventory and complete reports stay private.
-- Bind a verified identity email and opt in to offline/recovery notifications when
-  the receiver has its selected SMTP or W-Mail transport configured.
+- Bind your W-ID notification account, or a verified contact for SMTP, and opt in
+  to offline/recovery notifications when the selected transport is configured.
 - The interface and API messages support English and Simplified Chinese, selected
   from the browser's `Accept-Language` preferences.
 
@@ -263,8 +263,9 @@ These defaults target roughly five-second visibility; they are not a latency SLA
 
 Optional OAuth uses Authorization Code + PKCE with `openid profile email` and the
 callback `https://YOUR_REGION/auth/callback`. Configure the `oidc_*` fields for
-normal login. Only verified emails can be bound, and notification delivery requires
-user opt-in. Mail transport is chosen by the receiver operator as described below.
+normal login. Notification delivery requires explicit user opt-in. SMTP binds the
+login's verified email; W-Mail binds the verified W-ID subject and lets W-ID choose
+its notification mailbox. Mail transport is chosen by the receiver operator below.
 
 ### Notification mail providers
 
@@ -278,6 +279,19 @@ project mailbox, and `w_mail_api_key` to that project's send-only server key.
 W-Mail fixes the sender from its mailbox; `smtp_from` applies only to SMTP.
 A loopback HTTP origin is accepted only for isolated local acceptance.
 
+W-Mail binds the original `sub` from a successful canonical W-ID OAuth callback,
+not this receiver's issuer-qualified owner hash. The session and selected recipient
+stay purpose-bound AES-GCM ciphertext in the existing fields; the new W-Mail
+binding contains only `{userId}`, never a copied mailbox address. The binding is
+for the person who explicitly enabled notifications, not an inferred space owner.
+A verified external contact email is unnecessary for W-Mail: W-ID and W-Mail
+enforce current product/account state and resolve the chosen or sole mailbox,
+falling back to the verified contact address only when no W-Mail binding exists.
+Other OIDC issuers may still supply SMTP contacts, but cannot supply W-ID subjects.
+Existing sessions without the original subject require a fresh normal W-ID login
+and explicit notification binding. Switching mail providers also requires rebinding;
+it does not silently change a recipient or re-enable notifications.
+
 Each regional receiver owns its private configuration and notification outbox.
 Updating a provider does not bind addresses, enable a tenant's notifications, or
 claim another receiver's spaces. Existing queued SMTP records keep their original
@@ -287,12 +301,19 @@ email settings API. Restart the receiver after changing its private configuratio
 
 New W-Mail notifications reuse the existing SQLite outbox. It stores the selected
 project/mailbox/origin and random event key with each new status transition; the
-recipient remains encrypted and the body is rendered only in memory. The worker
+recipient subject remains encrypted and the body is rendered only in memory. The worker
 commits its no-resubmit marker before POST. A timeout, interrupted Cron worker,
 missing acknowledgement or lookup404 permits only GET of that original operation.
 Switching back to SMTP still permits those W-Mail lookups through the retained
 profile; it never starts a new W-Mail send. A changed mailbox/origin pauses the
 old operation rather than forwarding its credential elsewhere.
+New requests use `recipientUserId`; receipts must match its opaque `user:<sub>`
+label, original operation/context and known job. Selected-mailbox or authority
+changes are rechecked centrally before provider submission. Old already-posted
+address-mode jobs retain their original GET-only reconciliation. Old unposted
+address-mode W-Mail jobs become `superseded` with `mail_identity_rebind_required`;
+new binding, disabling and unbinding also retain superseded rows instead of deleting
+pending history. No old task is converted to a new recipient or replayed.
 
 Provider acceptance and recipient-server delivery are separate states. Each
 operation has at most six receipt lookups and a two-day deadline; an unresolved

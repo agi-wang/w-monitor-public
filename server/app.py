@@ -26,7 +26,7 @@ from encryption import SealedData, verify_signature
 from metrics import AvailabilityHistory, configuration as probe_configuration, validate_probe, probe_status
 from i18n import EN, language, render_html, translate
 
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 SOURCE_RELEASE = Path(__file__).resolve().parents[1].name
 MAX_BODY = 8 * 1024 * 1024
 WEB = Path(__file__).resolve().parent / "web"
@@ -221,6 +221,40 @@ def w_mail_profile():
 def email_delivery_available():
     provider = CONFIG.get("email_provider", "smtp")
     return smtp_available() if provider == "smtp" else bool(w_mail_profile()) if provider == "w-mail" else False
+
+
+def valid_wid_subject(value):
+    try:
+        return isinstance(value, str) and 0 < len(value.encode()) <= 128 and not any(character.isspace() or ord(character) < 32 or 127 <= ord(character) <= 159 for character in value)
+    except UnicodeError:
+        return False
+
+
+def identity_contact(session):
+    """Only the verified callback can seal the original subject, never a client."""
+    value = BOX.open("verified-email:" + session["subject"], session["verified_email"]) if session.get("subject") and session.get("verified_email") else None
+    if isinstance(value, str):
+        return None, value  # Old sessions cannot recover the original W-ID sub.
+    if not isinstance(value, dict):
+        return None, None
+    subject = value.get("userId")
+    trusted = ISSUER == "https://auth.myfastools.com" and valid_wid_subject(subject) and digest(ISSUER + "\0" + subject) == session["subject"]
+    email = value.get("email")
+    return subject if trusted else None, email if isinstance(email, str) else None
+
+
+def notification_target(space_id, sealed):
+    value = BOX.open("notification-email:" + space_id, sealed)
+    if isinstance(value, dict) and set(value) == {"userId"} and valid_wid_subject(value["userId"]):
+        return value
+    if isinstance(value, str) and 0 < len(value) <= 254 and "@" in value and "\r" not in value and "\n" not in value:
+        return value
+    raise ValueError("Invalid notification target")
+
+
+def supersede_pending_notifications(db, space_id, code):
+    now = int(time.time())
+    db.execute("UPDATE notification_outbox SET status='superseded',delivery=CASE WHEN json_extract(delivery,'$.provider')='w-mail' THEN json_set(delivery,'$.complete',json('true'),'$.completed_at',?,'$.updated_at',?,'$.code',?) ELSE delivery END WHERE space_id=? AND status='pending' AND COALESCE(json_extract(delivery,'$.post_started'),0)=0", (now, now, code, space_id))
 
 
 class Rejected(Exception):
@@ -972,7 +1006,8 @@ def route(db, environ):
         owner = digest(ISSUER + "\0" + subject)
         db.execute("BEGIN IMMEDIATE")
         email = identity.get("email")
-        verified_email = BOX.seal("verified-email:" + owner, email) if identity.get("email_verified") is True and isinstance(email, str) and len(email) <= 254 and "@" in email and "\r" not in email and "\n" not in email else None
+        verified_email = email if identity.get("email_verified") is True and isinstance(email, str) and len(email) <= 254 and "@" in email and "\r" not in email and "\n" not in email else None
+        verified_email = BOX.seal("verified-email:" + owner, {"userId": subject, "email": verified_email})
         owned = db.execute("SELECT id FROM spaces WHERE owner=? ORDER BY created_at LIMIT 1", (owner,)).fetchone()
         db.execute("UPDATE sessions SET hash=?,csrf=?,subject=?,label=?,expires=?,space_id=COALESCE(space_id,?),verified_email=? WHERE hash=?", (digest(token), secrets.token_hex(32), owner, label[:80] if isinstance(label, str) else "已登录用户", int(time.time()) + SESSION_TTL, owned["id"] if owned else None, verified_email, session["hash"]))
         db.commit()
@@ -1019,8 +1054,15 @@ def route(db, environ):
     if method == "GET" and path == "/api/email":
         space = current_space(db, session)
         operation_guard(environ, space)
-        address = BOX.open("notification-email:" + space["id"], space["email"]) if space["email"] else None
-        return 200, {"email": address, "enabled": bool(space["notifications_enabled"]), "can_bind": bool(session.get("verified_email")), "delivery_available": email_delivery_available()}, headers
+        target = notification_target(space["id"], space["email"]) if space["email"] else None
+        subject, address = identity_contact(session)
+        central = CONFIG.get("email_provider", "smtp") == "w-mail"
+        binding = "w-id" if isinstance(target, dict) else "email" if target else None
+        return 200, {"email": target if isinstance(target, str) else None, "binding": binding,
+                     "provider": CONFIG.get("email_provider", "smtp"), "enabled": bool(space["notifications_enabled"]),
+                     "can_bind": bool(subject if central else address), "requires_login": central and not subject,
+                     "requires_rebind": bool(target) and central != isinstance(target, dict),
+                     "delivery_available": email_delivery_available()}, headers
     if method == "GET" and path == "/api/pages":
         space = current_space(db, session)
         operation_guard(environ, space)
@@ -1171,36 +1213,45 @@ def route(db, environ):
             forget_availability([device_id + ":" + monitor_id], space["id"])
         return 200, {"ok": True, "id": monitor_id}, headers
     if path == "/api/email/bind":
+        if set(value) - {"enabled"}:
+            raise Rejected(400, "Invalid notification binding fields")
         active = begin_browser_write(db, session, space["id"])
-        if not active["subject"] or not active["verified_email"]:
-            raise Rejected(403, "请先正常登录并验证账号邮箱，再绑定通知")
+        subject, address = identity_contact(dict(active))
+        central = CONFIG.get("email_provider", "smtp") == "w-mail"
+        if not (subject if central else address):
+            raise Rejected(403, "请重新正常登录 W-ID 后绑定通知" if central else "请先正常登录并验证账号邮箱，再绑定通知")
         enabled = value.get("enabled", True)
         if type(enabled) is not bool:
             raise Rejected(400, "无效通知设置")
         if enabled and not email_delivery_available():
             raise Rejected(503, "此部署尚未配置通知发送服务")
-        address = BOX.open("verified-email:" + active["subject"], active["verified_email"])
-        db.execute("UPDATE spaces SET email=?,notifications_enabled=?,notification_locale=? WHERE id=?", (BOX.seal("notification-email:" + space["id"], address), int(enabled), locale, space["id"]))
-        db.execute("DELETE FROM notification_outbox WHERE space_id=? AND status='pending'", (space["id"],))
+        target = {"userId": subject} if central else address
+        db.execute("UPDATE spaces SET email=?,notifications_enabled=?,notification_locale=? WHERE id=?", (BOX.seal("notification-email:" + space["id"], target), int(enabled), locale, space["id"]))
+        supersede_pending_notifications(db, space["id"], "mail_binding_changed")
         db.execute("DELETE FROM notification_state WHERE device_id IN (SELECT id FROM devices WHERE space_id=?)", (space["id"],))
         db.commit()
         return 200, {"ok": True}, headers
     if path == "/api/email/unbind":
         begin_browser_write(db, session, space["id"])
         db.execute("UPDATE spaces SET email=NULL,notifications_enabled=0 WHERE id=?", (space["id"],))
-        db.execute("DELETE FROM notification_outbox WHERE space_id=? AND status='pending'", (space["id"],))
+        supersede_pending_notifications(db, space["id"], "mail_unbound")
         db.commit()
         return 200, {"ok": True}, headers
     if path == "/api/email/settings":
         enabled = value.get("enabled")
-        if type(enabled) is not bool or (enabled and not space["email"]):
+        if type(enabled) is not bool:
+            raise Rejected(400, "无效通知设置")
+        active = begin_browser_write(db, session, space["id"])
+        space = current_space(db, dict(active))
+        if enabled and not space["email"]:
             raise Rejected(400, "请先绑定已验证邮箱")
+        if enabled and (CONFIG.get("email_provider", "smtp") == "w-mail") != isinstance(notification_target(space["id"], space["email"]), dict):
+            raise Rejected(409, "邮件渠道已变化，请重新绑定通知")
         if enabled and not email_delivery_available():
             raise Rejected(503, "通知发送服务暂不可用")
-        begin_browser_write(db, session, space["id"])
         db.execute("UPDATE spaces SET notifications_enabled=?,notification_locale=? WHERE id=?", (int(enabled), locale, space["id"]))
         if not enabled:
-            db.execute("DELETE FROM notification_outbox WHERE space_id=? AND status='pending'", (space["id"],))
+            supersede_pending_notifications(db, space["id"], "mail_notifications_disabled")
         db.commit()
         return 200, {"ok": True}, headers
     if path == "/api/spaces/delete":

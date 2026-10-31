@@ -13,9 +13,9 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
-from app import (BOX, CONFIG, DATA, ORIGIN, NoRedirect, database,
+from app import (BOX, CONFIG, DATA, ORIGIN, VERSION, NoRedirect, database,
                  email_delivery_available, live_metadata, offline_after,
-                 smtp_available, w_mail_profile)
+                 notification_target, smtp_available, w_mail_profile)
 
 
 def delivery_metadata():
@@ -26,9 +26,7 @@ def delivery_metadata():
 
 
 def message_content(item):
-    recipient = BOX.open("notification-email:" + item["space_id"], item["recipient"])
-    if not isinstance(recipient, str) or "\r" in recipient or "\n" in recipient:
-        raise ValueError("Invalid verified recipient")
+    recipient = notification_target(item["space_id"], item["recipient"])
     english = item["notification_locale"] == "en"
     label = ("reporting restored" if item["state"] == "online" else "report overdue") if english else ("恢复上报" if item["state"] == "online" else "上报已超时")
     name = "".join(character for character in item["name"] if ord(character) >= 32 and ord(character) != 127)[:80]
@@ -45,12 +43,15 @@ def mail_log(meta, status, code):
                       "status": status, "code": code}), file=sys.stderr)
 
 
-def receipt_status(body, meta, recipient):
+def receipt_status(body, meta, target, event_type):
+    expected_context = {"eventId": meta["operation_id"], "attemptId": meta["operation_id"], "eventType": event_type}
+    recipient = "user:" + target["userId"] if isinstance(target, dict) else target.strip().lower()
     if (not isinstance(body, dict) or body.get("mailboxId") != meta["mailbox_id"] or
             (not isinstance(body.get("actor"), dict) or body["actor"].get("kind") != "project" or body["actor"].get("projectId") != meta["project_id"]) or
             not re.fullmatch(r"[a-f0-9]{32}", str(body.get("id", ""))) or
             (meta.get("job_id") and meta["job_id"] != body["id"]) or
-            body.get("context", {}).get("eventId") != meta["operation_id"] or
+            body.get("operationId") != meta["operation_id"] or body.get("context") != expected_context or
+            (body.get("recipientUserId") != target["userId"] if isinstance(target, dict) else "recipientUserId" in body) or
             body.get("status") not in ("queued", "submitting", "submitted", "unknown", "failed", "cancelled")):
         return "unknown", "mail_receipt_invalid"
     provider = body.get("providerId")
@@ -60,13 +61,20 @@ def receipt_status(body, meta, recipient):
     if not isinstance(recipients, dict) or set(recipients) != {recipient} or not isinstance(recipients[recipient], dict):
         return "unknown", "mail_receipt_invalid"
     state = recipients[recipient].get("status")
-    if state not in ("queued", "delivered", "bounced", "dropped", "deferred", "complained"):
+    if state not in ("queued", "delivered", "bounced", "failed", "rejected", "deferred", "complained"):
         return "unknown", "mail_receipt_invalid"
+    review = body.get("review")
+    if review is not None:
+        if (not isinstance(review, dict) or review.get("state") not in ("pending", "approved", "rejected") or
+                review.get("reason") != "platform_frequency" or type(review.get("requestedAt")) is not int or
+                any(key in review and type(review[key]) is not int for key in ("decidedAt",))):
+            return "unknown", "mail_receipt_invalid"
+        meta["review"] = {key: review[key] for key in ("state", "reason", "requestedAt", "decidedAt") if key in review}
     meta["job_id"], meta["provider_id"] = body["id"], provider
     meta["submission_status"], meta["recipient_status"] = body["status"], state
     if state == "delivered" and provider:
         return "delivered", "mail_delivered"
-    if state in ("bounced", "dropped", "complained") or body["status"] in ("failed", "cancelled"):
+    if state in ("bounced", "failed", "rejected", "complained") or body["status"] in ("failed", "cancelled"):
         return "failed", "mail_provider_failed"
     if body["status"] == "submitted" and provider:
         return "provider_accepted", "mail_provider_accepted"
@@ -92,15 +100,16 @@ def deliver_w_mail(db, item, meta, now):
     if first and CONFIG.get("email_provider", "smtp") != "w-mail":
         return  # An inactive profile may reconcile, never initiate a send.
     try:
-        recipient = BOX.open("notification-email:" + item["space_id"], item["recipient"])
-        if not isinstance(recipient, str) or "\r" in recipient or "\n" in recipient:
-            raise ValueError("Invalid recipient")
-        recipient = recipient.strip().lower()
+        target = notification_target(item["space_id"], item["recipient"])
+        if first and not isinstance(target, dict):
+            meta["complete"], meta["code"], meta["completed_at"] = True, "mail_identity_rebind_required", now
+            db.execute("UPDATE notification_outbox SET status='superseded',delivery=? WHERE id=?", (json.dumps(meta), item["id"]))
+            mail_log(meta, "superseded", "mail_identity_rebind_required")
+            return
         payload = None
         if first:
-            recipient, subject, text = message_content(item)
-            recipient = recipient.strip().lower()
-            payload = json.dumps({"to": [recipient], "subject": subject, "text": text,
+            target, subject, text = message_content(item)
+            payload = json.dumps({"recipientUserId": target["userId"], "subject": subject, "text": text,
                                   "context": {"eventId": meta["operation_id"], "attemptId": meta["operation_id"],
                                               "eventType": "monitor.host." + item["state"]}}).encode()
         old = item["delivery"]
@@ -117,14 +126,14 @@ def deliver_w_mail(db, item, meta, now):
         request = Request(profile["url"] + "/api/v1/mailboxes/" + profile["mailbox_id"] + "/sends", data=payload,
                           method="POST" if first else "GET", headers={"Authorization": "Bearer " + CONFIG["w_mail_api_key"],
                           "X-W-Project-Id": profile["project_id"], "Idempotency-Key": meta["operation_id"],
-                          "Content-Type": "application/json", "User-Agent": "W-Monitor-Public/1.4.1"})
+                          "Content-Type": "application/json", "User-Agent": "W-Monitor-Public/" + VERSION})
         try:
             # No proxy, redirects or automatic retries can forward this credential.
             with build_opener(ProxyHandler({}), NoRedirect()).open(request, timeout=5) as response:
                 raw = response.read(32769)
                 if len(raw) > 32768:
                     raise ValueError("Receipt too large")
-                state, code = receipt_status(json.loads(raw), meta, recipient)
+                state, code = receipt_status(json.loads(raw), meta, target, "monitor.host." + item["state"])
         except HTTPError as error:
             state, code = "unknown", {401: "mail_auth_rejected", 403: "mail_scope_rejected", 404: "mail_operation_not_visible", 429: "mail_rate_limited"}.get(error.code, "mail_http_unknown")
         except Exception:
@@ -154,6 +163,12 @@ def main():
             metadata, available = live_metadata(rows) if rows else ({}, True)
             db.execute("BEGIN IMMEDIATE")
             for device in rows:
+                try:
+                    target = notification_target(device["space_id"], device["email"])
+                except ValueError:
+                    continue
+                if (CONFIG.get("email_provider", "smtp") == "w-mail") != isinstance(target, dict):
+                    continue  # A provider switch requires explicit rebinding.
                 meta = metadata.get(device["id"])
                 if not isinstance(meta, dict) or type(meta.get("received_at")) is not int:
                     continue  # Missing Redis data is unknown, never an outage.
@@ -200,6 +215,9 @@ def main():
                     db.execute("UPDATE notification_outbox SET status='sending',attempts=attempts+1,attempted_at=? WHERE id=?", (now, item["id"]))
                     try:
                         recipient, subject, text = message_content(item)
+                        if not isinstance(recipient, str):
+                            db.execute("UPDATE notification_outbox SET status='superseded' WHERE id=?", (item["id"],))
+                            continue
                         if transport is None:
                             transport = smtplib.SMTP(CONFIG["smtp_host"], int(CONFIG.get("smtp_port", 587)), timeout=5)
                             transport.ehlo()

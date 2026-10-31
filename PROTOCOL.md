@@ -1,4 +1,4 @@
-# Public monitoring contract v1.4.2
+# Public monitoring contract v1.4.3
 
 [OpenAPI](server/openapi.json) describes browser, ingestion and public-status APIs.
 This receiver implements the existing v1.0 full report envelope; it has no Private
@@ -87,12 +87,28 @@ rechecks access. Shared hosting does not promise native WebSocket streaming.
 
 ## Email
 
-A normal identity with `email_verified: true` can bind its verified email and
-explicitly enable notifications. No arbitrary recipient is accepted. Addresses
-and queued recipients are encrypted. The optional Cron worker sends bounded
-offline/recovery changes using validated STARTTLS; missing telemetry is skipped.
+A normal canonical W-ID login can explicitly bind its original verified OAuth
+subject for W-Mail notifications, including accounts without an external email.
+The receiver's hashed local owner is never used as that subject. W-ID/W-Mail
+resolve its chosen or sole mailbox, enforce current exact-product admission and
+check the target again before provider submission. Other OIDC issuers cannot
+select a W-ID recipient. SMTP continues to require `email_verified: true` and
+binds only that login's verified contact. No arbitrary address or user ID is
+accepted from the caller. Subjects, addresses and queued targets are encrypted.
+The optional Cron worker sends bounded offline/recovery changes; SMTP uses
+validated STARTTLS and W-Mail uses its authenticated project API. Missing telemetry is skipped.
 Email is not a login or recovery-key delivery channel. Users can disable delivery
-or unbind the email, cancelling pending messages.
+or unbind the target, retaining pending records as superseded history. Existing
+W-Mail POST markers always reconcile by GET only; legacy unposted address-mode
+W-Mail records require rebinding and are never replayed.
+
+`GET /api/email` adds `provider`, `binding` (`w-id`, `email` or null),
+`requires_login` and `requires_rebind`. In W-ID mode `email` is null, without
+disclosing the centrally resolved address; `enabled` and binding existence remain
+independent. `can_bind` requires a fresh trusted W-ID subject for W-Mail or a
+verified contact for SMTP. Existing cookie, operation-token, Origin and CSRF
+requirements remain. `POST /api/email/bind` still accepts only explicit enablement,
+never a target. Enabling a binding from another provider returns409 until rebind.
 
 ## Platform load
 
