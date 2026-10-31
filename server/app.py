@@ -26,7 +26,7 @@ from encryption import SealedData, verify_signature
 from metrics import AvailabilityHistory, configuration as probe_configuration, validate_probe, probe_status
 from i18n import EN, language, render_html, translate
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 SOURCE_RELEASE = Path(__file__).resolve().parents[1].name
 MAX_BODY = 8 * 1024 * 1024
 WEB = Path(__file__).resolve().parent / "web"
@@ -186,7 +186,40 @@ with database() as _db:
     for _column, _default in (("show_network", 0), ("show_history", 0), ("show_cpu", 1), ("show_memory", 1), ("show_disk", 1)):
         if _column not in _page_columns:
             _db.execute("ALTER TABLE pages ADD COLUMN " + _column + " INTEGER NOT NULL DEFAULT " + str(_default))
+    _notification_columns = {row[1] for row in _db.execute("PRAGMA table_info(notification_outbox)")}
+    if "delivery" not in _notification_columns:
+        _db.execute("ALTER TABLE notification_outbox ADD COLUMN delivery TEXT")
     _db.commit()
+
+
+def smtp_available():
+    return all(CONFIG.get(key) for key in ("smtp_host", "smtp_user", "smtp_password", "smtp_from"))
+
+
+def w_mail_profile():
+    # This deployment-owned credential is separate from tenant identity/recovery.
+    try:
+        origin = CONFIG.get("w_mail_url", "").rstrip("/")
+        parsed = urlsplit(origin)
+        port = parsed.port
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not ((parsed.scheme == "https" and parsed.hostname == "wmail.myfastools.com" and port in (None, 443)) or
+            (parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost", "::1"))):
+        return None
+    if parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
+        return None
+    key = CONFIG.get("w_mail_api_key", "")
+    if (CONFIG.get("w_mail_project_id") != "w-monitor-public" or
+            not re.fullmatch(r"[a-f0-9]{32}", CONFIG.get("w_mail_mailbox_id", "")) or
+            not isinstance(key, str) or not key.startswith("wid_sk_") or len(key) > 8192 or any(char.isspace() for char in key)):
+        return None
+    return {"url": origin, "project_id": "w-monitor-public", "mailbox_id": CONFIG["w_mail_mailbox_id"]}
+
+
+def email_delivery_available():
+    provider = CONFIG.get("email_provider", "smtp")
+    return smtp_available() if provider == "smtp" else bool(w_mail_profile()) if provider == "w-mail" else False
 
 
 class Rejected(Exception):
@@ -986,7 +1019,7 @@ def route(db, environ):
         space = current_space(db, session)
         operation_guard(environ, space)
         address = BOX.open("notification-email:" + space["id"], space["email"]) if space["email"] else None
-        return 200, {"email": address, "enabled": bool(space["notifications_enabled"]), "can_bind": bool(session.get("verified_email")), "delivery_available": bool(CONFIG.get("smtp_host") and CONFIG.get("smtp_user") and CONFIG.get("smtp_password") and CONFIG.get("smtp_from"))}, headers
+        return 200, {"email": address, "enabled": bool(space["notifications_enabled"]), "can_bind": bool(session.get("verified_email")), "delivery_available": email_delivery_available()}, headers
     if method == "GET" and path == "/api/pages":
         space = current_space(db, session)
         operation_guard(environ, space)
@@ -1143,7 +1176,7 @@ def route(db, environ):
         enabled = value.get("enabled", True)
         if type(enabled) is not bool:
             raise Rejected(400, "无效通知设置")
-        if enabled and not (CONFIG.get("smtp_host") and CONFIG.get("smtp_user") and CONFIG.get("smtp_password") and CONFIG.get("smtp_from")):
+        if enabled and not email_delivery_available():
             raise Rejected(503, "此部署尚未配置通知发送服务")
         address = BOX.open("verified-email:" + active["subject"], active["verified_email"])
         db.execute("UPDATE spaces SET email=?,notifications_enabled=?,notification_locale=? WHERE id=?", (BOX.seal("notification-email:" + space["id"], address), int(enabled), locale, space["id"]))
@@ -1161,7 +1194,7 @@ def route(db, environ):
         enabled = value.get("enabled")
         if type(enabled) is not bool or (enabled and not space["email"]):
             raise Rejected(400, "请先绑定已验证邮箱")
-        if enabled and not CONFIG.get("smtp_host"):
+        if enabled and not email_delivery_available():
             raise Rejected(503, "通知发送服务暂不可用")
         begin_browser_write(db, session, space["id"])
         db.execute("UPDATE spaces SET notifications_enabled=?,notification_locale=? WHERE id=?", (int(enabled), locale, space["id"]))
