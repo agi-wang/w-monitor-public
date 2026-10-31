@@ -26,7 +26,7 @@ from encryption import SealedData, verify_signature
 from metrics import AvailabilityHistory, configuration as probe_configuration, validate_probe, probe_status
 from i18n import EN, language, render_html, translate
 
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 SOURCE_RELEASE = Path(__file__).resolve().parents[1].name
 MAX_BODY = 8 * 1024 * 1024
 WEB = Path(__file__).resolve().parent / "web"

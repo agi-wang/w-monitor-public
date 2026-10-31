@@ -218,7 +218,7 @@ jobs:
           [[ "$DEPLOY_USER" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]
           [[ "$PUBLIC_ORIGIN" =~ ^https://[A-Za-z0-9.-]+$ ]]
           test -n "$PUBLIC_W_MAIL_CONFIG"
-          [[ "$DEPLOY_TRANSPORT" == directadmin || "$DEPLOY_TRANSPORT" == cpanel ]] || { echo "Private mail overlay requires a managed panel target" >&2; exit 1; }
+          [[ "$DEPLOY_TRANSPORT" == directadmin || "$DEPLOY_TRANSPORT" == cpanel || "$DEPLOY_TRANSPORT" == ssh ]] || { echo "Unregistered deployment transport" >&2; exit 1; }
           if [ "$DEPLOY_TRANSPORT" = directadmin ]; then
             test -n "$PUBLIC_DEPLOY_PANEL_PASSWORD"
           elif [ "$DEPLOY_TRANSPORT" = cpanel ]; then
@@ -256,13 +256,8 @@ jobs:
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$temporary/known_hosts"
           if [ "$DEPLOY_TRANSPORT" = directadmin ] || [ "$DEPLOY_TRANSPORT" = cpanel ]; then
             python3 ops/panel_deploy.py "$temporary/delivery.zip" "$RELEASE_TAG" "$sha"
-          else
-            DEPLOY_PORT="${DEPLOY_PORT:-22}"
-            [[ "$DEPLOY_PORT" =~ ^[1-9][0-9]{0,4}$ ]]
-            (( DEPLOY_PORT >= 1 && DEPLOY_PORT <= 65535 ))
-            ssh -p "$DEPLOY_PORT" -i "$temporary/identity" -o KexAlgorithms=diffie-hellman-group14-sha256 -c aes128-ctr -o BatchMode=yes -o ConnectTimeout=10 \
-              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$temporary/known_hosts" \
-              "$DEPLOY_USER@$DEPLOY_HOST" "deploy $RELEASE_TAG $sha" < "$temporary/delivery.zip"
+          elif [ "$DEPLOY_TRANSPORT" = ssh ]; then
+            python3 ops/panel_deploy.py "$temporary/delivery.zip" "$RELEASE_TAG" "$sha" "$temporary/identity" "$temporary/known_hosts"
           fi
           curl -fsS --proto '=https' --tlsv1.2 --tls-max 1.2 --max-time 20 --retry 2 \
             "$PUBLIC_ORIGIN/health" > "$temporary/health.json"

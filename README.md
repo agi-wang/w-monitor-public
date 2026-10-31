@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.4.1**; the release series starts at **v1.0.0**.
+The current release is **v1.4.2**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -328,11 +328,26 @@ Radar-materialized copy. The receiver's existing private runtime copy remains.
 
 The panel driver first uploads reviewed public gate source, verifies its source
 hash and runs an owner-account preflight through the existing DirectAdmin terminal
-or cPanel one-shot Cron interface. The preflight checks the actual private
+or cPanel one-shot Cron interface. For explicitly selected restricted SSH,
+the operator first installs the reviewed gate using the registered owner channel;
+CI does not upload code, replace the gate or use an owner key over SSH. It sends
+`mail-preflight <origin> <reviewed-gate-sha256>` through the existing forced key,
+then `deploy <tag> <inner-archive-sha256>` with the private envelope over stdin.
+The gate verifies its own source hash before accepting preflight. Older gates,
+source mismatches and failed preflights stop before any private envelope is sent.
+SSH targets are limited to the reviewed host/port/account/origin fingerprints for
+`public-production` (`us`) and `public-singapore-dapanel` (`sg-dap`). US currently
+uses the explicitly configured DirectAdmin channel. Unknown SSH targets and
+transports fail before remote calls; panel failures never fall back to SSH.
+The preflight checks the actual private
 directory, owner-only files, matching receiver/deployment origins, and that the
 private directory is outside the document root. Only then does it upload a
 mode-0600 private outer envelope containing the original verified release and the
-mail overlay. The original nine public assets and their provenance/checksums are
+mail overlay. SSH streams that envelope directly into the gate over stdin after
+preflight; it creates no remote archive.
+SSH uses the dedicated identity and pinned known-hosts file with no user SSH
+configuration, forwarding, retries or remote-output logging. The original nine
+public assets and their provenance/checksums are
 unchanged. Only the eight current fleet origins, fixed project `w-monitor-public`,
 registered fleet mailbox, and the five mail fields are accepted; retired UK2 and
 other targets are refused. Old gates reject the new envelope until upgraded;
@@ -422,6 +437,10 @@ Supported deployment transports:
   22. CI accepts only decimal ports 1–65535 and keeps strict host-key validation.
   For custom ports, store the matching `[host]:port` entry in
   `PUBLIC_DEPLOY_KNOWN_HOSTS`; changing a port never bypasses the pinned key.
+  Before tagging, the operator must install the exact reviewed
+  `ops/deploy_receiver.py` through the existing registered owner interface. The
+  forced CI key keeps its restriction: only the hash-checked `mail-preflight` and
+  existing versioned `deploy` commands are used, with no general shell capability.
 - DirectAdmin's authenticated file and terminal APIs.
 - cPanel's authenticated file and account Cron APIs, using a one-shot deployment
   command and preserving existing account jobs.

@@ -3,6 +3,7 @@
 
 Install this outside the web root. Input is one verified GitHub release archive;
 SSH_ORIGINAL_COMMAND must be `deploy vX.Y.Z SHA256`. No shell commands are accepted.
+A hash-checked `mail-preflight ORIGIN GATE_SHA256` checks an operator-installed gate.
 A private mail-only overlay is accepted only for the eight owned fleet receivers.
 Private configuration/database values never enter deployment output or releases.
 """
@@ -382,7 +383,10 @@ def deploy():
 if __name__ == "__main__":
     try:
         preflight = shlex.split(os.environ.get("SSH_ORIGINAL_COMMAND", ""))
-        if len(preflight) == 2 and preflight[0] == "mail-preflight":
+        if len(preflight) == 3 and preflight[0] == "mail-preflight":
+            if (not re.fullmatch(r"[a-f0-9]{64}", preflight[2]) or
+                    hashlib.sha256(private_bytes(Path(__file__))).hexdigest() != preflight[2]):
+                raise RuntimeError("Reviewed gate hash refused")
             mail_preflight(preflight[1])
             print(json.dumps({"private_mail_target_ready": True}))
         else:
