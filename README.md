@@ -131,8 +131,8 @@ installed Agent to upgrade itself.
 - Visitors see names, online state, last report, CPU, memory and disk by default.
   Owners opt each page into default-egress rates and historical charts separately.
   IP addresses, process details, inventory and complete reports stay private.
-- Bind a verified identity email and opt in to offline/recovery notifications when
-  the receiver has its selected SMTP or W-Mail transport configured.
+- Bind your W-ID notification account, or a verified contact for SMTP, and opt in
+  to offline/recovery notifications when the selected transport is configured.
 - The interface and API messages support English and Simplified Chinese, selected
   from the browser's `Accept-Language` preferences.
 

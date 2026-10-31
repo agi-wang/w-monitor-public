@@ -1239,13 +1239,16 @@ def route(db, environ):
         return 200, {"ok": True}, headers
     if path == "/api/email/settings":
         enabled = value.get("enabled")
-        if type(enabled) is not bool or (enabled and not space["email"]):
+        if type(enabled) is not bool:
+            raise Rejected(400, "无效通知设置")
+        active = begin_browser_write(db, session, space["id"])
+        space = current_space(db, dict(active))
+        if enabled and not space["email"]:
             raise Rejected(400, "请先绑定已验证邮箱")
         if enabled and (CONFIG.get("email_provider", "smtp") == "w-mail") != isinstance(notification_target(space["id"], space["email"]), dict):
             raise Rejected(409, "邮件渠道已变化，请重新绑定通知")
         if enabled and not email_delivery_available():
             raise Rejected(503, "通知发送服务暂不可用")
-        begin_browser_write(db, session, space["id"])
         db.execute("UPDATE spaces SET notifications_enabled=?,notification_locale=? WHERE id=?", (int(enabled), locale, space["id"]))
         if not enabled:
             supersede_pending_notifications(db, space["id"], "mail_notifications_disabled")
