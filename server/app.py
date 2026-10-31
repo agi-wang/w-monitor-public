@@ -210,8 +210,9 @@ def w_mail_profile():
     if parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
         return None
     key = CONFIG.get("w_mail_api_key", "")
+    mailbox_id = CONFIG.get("w_mail_mailbox_id", "")
     if (CONFIG.get("w_mail_project_id") != "w-monitor-public" or
-            not re.fullmatch(r"[a-f0-9]{32}", CONFIG.get("w_mail_mailbox_id", "")) or
+            not isinstance(mailbox_id, str) or not re.fullmatch(r"[a-f0-9]{32}", mailbox_id) or
             not isinstance(key, str) or not key.startswith("wid_sk_") or len(key) > 8192 or any(char.isspace() for char in key)):
         return None
     return {"url": origin, "project_id": "w-monitor-public", "mailbox_id": CONFIG["w_mail_mailbox_id"]}

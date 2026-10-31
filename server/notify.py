@@ -95,9 +95,11 @@ def deliver_w_mail(db, item, meta, now):
         recipient = BOX.open("notification-email:" + item["space_id"], item["recipient"])
         if not isinstance(recipient, str) or "\r" in recipient or "\n" in recipient:
             raise ValueError("Invalid recipient")
+        recipient = recipient.strip().lower()
         payload = None
         if first:
             recipient, subject, text = message_content(item)
+            recipient = recipient.strip().lower()
             payload = json.dumps({"to": [recipient], "subject": subject, "text": text,
                                   "context": {"eventId": meta["operation_id"], "attemptId": meta["operation_id"],
                                               "eventType": "monitor.host." + item["state"]}}).encode()
