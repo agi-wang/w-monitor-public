@@ -314,6 +314,48 @@ SET status='unknown',
 WHERE status='pending' AND json_extract(delivery,'$.provider')='w-mail';
 ```
 
+### Fleet mail configuration during formal deployment
+
+The eight owned production receivers use a private mail-only overlay during their
+existing tagged deployment. Radar remains the startup-value authority; the
+operator materializes only the five W-Mail profile fields above and temporarily
+sets the JSON object as the repository Actions secret `PUBLIC_W_MAIL_CONFIG`
+through stdin. It is injected only into the regional deployment step. Never place
+this secret in source, a public release zip, attestation, Actions artifact, command
+argument, URL or deployment output. Remove the temporary Actions copy after all
+eight deployments finish; each future formal rollout must supply a fresh,
+Radar-materialized copy. The receiver's existing private runtime copy remains.
+
+The panel driver first uploads reviewed public gate source, verifies its source
+hash and runs an owner-account preflight through the existing DirectAdmin terminal
+or cPanel one-shot Cron interface. The preflight checks the actual private
+directory, owner-only files, matching receiver/deployment origins, and that the
+private directory is outside the document root. Only then does it upload a
+mode-0600 private outer envelope containing the original verified release and the
+mail overlay. The original nine public assets and their provenance/checksums are
+unchanged. Only the eight current fleet origins, fixed project `w-monitor-public`,
+registered fleet mailbox, and the five mail fields are accepted; retired UK2 and
+other targets are refused. Old gates reject the new envelope until upgraded;
+there is no fallback that silently skips the overlay. Non-overlay deployments
+still accept the original archive format.
+
+Inside the existing deployment lock, the gate merges the five fields into that
+account's own `config.json`, preserving its identity/encryption keys, SMTP profile,
+paths, region catalog and notification consent. No old instance secret is read by
+CI or copied to another receiver. The write is atomic and mode0600; a failed
+activation restores the exact original bytes and hosting selection. A temporary
+owner-only `mail-config-rollback.json` remains in that same private directory if
+a deployment process is killed: automatic changes then stop until the operator
+recovers or confirms that transaction, rather than guessing which profile won.
+The successful transaction removes its recovery copy.
+
+`/health` exposes only `email_channel` and `email_channel_configured`. The latter
+means the local profile is structurally valid; it is not proof of provider
+authentication or recipient delivery. Formal fleet activation requires the new
+release and these two fields to match, followed by the separate real notification
+acceptance. No notification subscription is enabled and no additional worker or
+mail probe is started by the overlay itself.
+
 ### Account-owned Redis
 
 If the host does not supply Redis, [ops/build_redis.sh](ops/build_redis.sh) builds a

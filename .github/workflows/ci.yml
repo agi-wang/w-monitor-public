@@ -157,7 +157,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/') && github.repository == 'agi-wang/w-monitor-public'
     needs: release
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -195,6 +195,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
+          PUBLIC_DEPLOY_REGION: ${{ matrix.region }}
+          PUBLIC_W_MAIL_CONFIG: ${{ secrets.PUBLIC_W_MAIL_CONFIG }}
           DEPLOY_HOST: ${{ vars.PUBLIC_DEPLOY_HOST }}
           DEPLOY_PORT: ${{ vars.PUBLIC_DEPLOY_PORT }}
           PUBLIC_ORIGIN: ${{ vars.PUBLIC_ORIGIN }}
@@ -215,6 +217,8 @@ jobs:
           [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
           [[ "$DEPLOY_USER" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]
           [[ "$PUBLIC_ORIGIN" =~ ^https://[A-Za-z0-9.-]+$ ]]
+          test -n "$PUBLIC_W_MAIL_CONFIG"
+          [[ "$DEPLOY_TRANSPORT" == directadmin || "$DEPLOY_TRANSPORT" == cpanel ]] || { echo "Private mail overlay requires a managed panel target" >&2; exit 1; }
           if [ "$DEPLOY_TRANSPORT" = directadmin ]; then
             test -n "$PUBLIC_DEPLOY_PANEL_PASSWORD"
           elif [ "$DEPLOY_TRANSPORT" = cpanel ]; then
@@ -262,7 +266,7 @@ jobs:
           fi
           curl -fsS --proto '=https' --tlsv1.2 --tls-max 1.2 --max-time 20 --retry 2 \
             "$PUBLIC_ORIGIN/health" > "$temporary/health.json"
-          python3 -c 'import json,os,sys; h=json.load(open(sys.argv[1])); assert h["release_tag"] == os.environ["RELEASE_TAG"] and h["host_control_enabled"] is False and h["cache"] == "redis"' "$temporary/health.json"
+          python3 -c 'import json,os,sys; h=json.load(open(sys.argv[1])); assert h["release_tag"] == os.environ["RELEASE_TAG"] and h["host_control_enabled"] is False and h["cache"] == "redis" and h["email_channel"] == "w-mail" and h["email_channel_configured"] is True' "$temporary/health.json"
           mkdir "$temporary/website"
           for file in w-monitor-lite-linux-amd64 w-monitor-lite-linux-amd64.sha256 w-monitor-lite-linux-arm64 w-monitor-lite-linux-arm64.sha256 install.sh install.sh.sha256; do
             curl -fsS --proto '=https' --tlsv1.2 --tls-max 1.2 --max-time 90 --retry 2 \

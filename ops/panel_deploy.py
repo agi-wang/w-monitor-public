@@ -7,6 +7,7 @@ application artifact is executed by the CI runner.
 """
 import base64
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -19,8 +20,11 @@ import ssl
 import struct
 import sys
 import time
+import zipfile
 from urllib.parse import urlencode, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+
+from deploy_receiver import validate_mail_overlay
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -117,6 +121,49 @@ class Terminal:
         raise RuntimeError("Panel deployment exceeded deadline")
 
 
+def private_delivery(data):
+    raw = os.environ.get("PUBLIC_W_MAIL_CONFIG", "")
+    if not raw:
+        return data, None
+    if len(raw.encode()) > 12000:
+        raise RuntimeError("Private mail profile exceeds bound")
+    origin = os.environ["PUBLIC_ORIGIN"].rstrip("/")
+    overlay = {"schema": "w-monitor-public-mail/v1", "region": os.environ["PUBLIC_DEPLOY_REGION"],
+               "public_url": origin, "config": json.loads(raw)}
+    validate_mail_overlay(overlay, origin)
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("release.zip", data)
+        archive.writestr("mail-overlay.json", json.dumps(overlay, separators=(",", ":")))
+    return output.getvalue(), origin
+
+
+def gate_bootstrap(home, python, candidate, source_hash, origin):
+    # Only a reviewed public source hash and fixed paths/origin appear in argv.
+    # No mail fields or private configuration values enter Terminal/Cron input.
+    code = """import hashlib,os,pathlib,shutil,stat,subprocess,sys
+p=pathlib.Path(sys.argv[1]);destination=p.parent/'deploy_receiver.py'
+try:
+ info=p.lstat()
+ if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode&0o077 or info.st_size>65536:raise RuntimeError("Reviewed gate owner refused")
+ if hashlib.sha256(p.read_bytes()).hexdigest()!=sys.argv[2]:raise RuntimeError("Reviewed gate hash refused")
+ subprocess.run([sys.executable,str(p)],env=dict(os.environ,SSH_ORIGINAL_COMMAND='mail-preflight '+sys.argv[3]),check=True,timeout=25,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+ mode=0o600
+ if destination.exists():
+  info=destination.lstat()
+  if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid():raise RuntimeError("Existing gate owner refused")
+  mode=0o700 if info.st_mode&0o100 else 0o600
+  backup=p.parent/'deploy_receiver.previous.py'
+  if backup.is_symlink():raise RuntimeError("Gate backup refused")
+  shutil.copyfile(destination,backup);os.chmod(backup,0o600)
+ os.chmod(p,mode)
+ os.replace(p,destination)
+finally:
+ p.unlink(missing_ok=True)
+"""
+    return " ".join(shlex.quote(value) for value in (python, "-c", "exec(" + repr(code) + ")", home + "/" + candidate, source_hash, origin))
+
+
 def deploy():
     archive, tag, checksum = sys.argv[1:]
     if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag) or not re.fullmatch(r"[a-f0-9]{64}", checksum):
@@ -133,32 +180,42 @@ def deploy():
     data = Path(archive).read_bytes()
     if len(data) > 192 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != checksum:
         raise RuntimeError("Deployment inventory checksum mismatch")
+    data, mail_origin = private_delivery(data)
+    gate = Path(__file__).with_name("deploy_receiver.py").read_bytes() if mail_origin else None
     if os.environ.get("DEPLOY_TRANSPORT") == "cpanel":
         from cpanel_deploy import deploy as cpanel_deploy
-        cpanel_deploy(origin, user, private, python, data, tag, checksum)
+        cpanel_deploy(origin, user, private, python, data, tag, checksum, mail_origin, gate)
         return
     authorization = "Basic " + base64.b64encode((user + ":" + os.environ["PUBLIC_DEPLOY_PANEL_PASSWORD"]).encode()).decode()
-    filename = "incoming-" + secrets.token_hex(16) + ".zip"
-    boundary = "wm-" + secrets.token_hex(16)
-    body = f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="upload"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode() + data + f"\r\n--{boundary}--\r\n".encode()
-    url = origin + "/api/filemanager-actions/upload?" + urlencode({"dir": private, "name": filename, "perm": "0600"})
-    request = Request(url, data=body, headers={"Authorization": authorization, "Content-Type": "multipart/form-data; boundary=" + boundary, "User-Agent": "W-Monitor-Public-Deploy"})
-    with build_opener(NoRedirect()).open(request, timeout=90) as response:
-        raw = response.read(65537)
-        if len(raw) > 65536:
-            raise RuntimeError("Panel upload response exceeds bound")
-        result = json.loads(raw) if raw else {}
-        if result and result.get("error"):
-            raise RuntimeError("Panel refused private release upload")
     home = "/home/" + user + "/" + private
+
+    def upload(filename, content):
+        boundary = "wm-" + secrets.token_hex(16)
+        body = f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="upload"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode() + content + f"\r\n--{boundary}--\r\n".encode()
+        url = origin + "/api/filemanager-actions/upload?" + urlencode({"dir": private, "name": filename, "perm": "0600"})
+        request = Request(url, data=body, headers={"Authorization": authorization, "Content-Type": "multipart/form-data; boundary=" + boundary, "User-Agent": "W-Monitor-Public-Deploy"})
+        with build_opener(NoRedirect(), ProxyHandler({})).open(request, timeout=90) as response:
+            raw = response.read(65537)
+        if len(raw) > 65536 or (raw and json.loads(raw).get("error")):
+            raise RuntimeError("Panel refused private deployment upload")
+
+    def run(command):
+        terminal = Terminal(origin, authorization)
+        try:
+            terminal.run(command + "; wm_result=$?; printf '\\n__WM_DEPLOY_EXIT__%s__\\n' \"$wm_result\"\r")
+        finally:
+            terminal.close()
+
+    if mail_origin:
+        candidate = ".wm-mail-gate-" + secrets.token_hex(16) + ".py"
+        upload(candidate, gate)  # Public reviewed source only, before any secret.
+        run(gate_bootstrap(home, python, candidate, hashlib.sha256(gate).hexdigest(), mail_origin))
+    filename = "incoming-" + secrets.token_hex(16) + ".zip"
+    upload(filename, data)  # The preflight proved the account path is private.
     incoming = home + "/" + filename
-    command = "SSH_ORIGINAL_COMMAND=" + shlex.quote("deploy " + tag + " " + checksum) + " " + shlex.quote(python) + " " + shlex.quote(home + "/deploy_receiver.py") + " < " + shlex.quote(incoming)
-    command += "; wm_result=$?; rm -f -- " + shlex.quote(incoming) + "; printf '\\n__WM_DEPLOY_EXIT__%s__\\n' \"$wm_result\"\r"
-    terminal = Terminal(origin, authorization)
-    try:
-        terminal.run(command)
-    finally:
-        terminal.close()
+    command = "chmod 600 " + shlex.quote(incoming) + " && SSH_ORIGINAL_COMMAND=" + shlex.quote("deploy " + tag + " " + checksum) + " " + shlex.quote(python) + " " + shlex.quote(home + "/deploy_receiver.py") + " < " + shlex.quote(incoming)
+    command += "; wm_result=$?; rm -f -- " + shlex.quote(incoming) + "; (exit \"$wm_result\")"
+    run(command)
     print(json.dumps({"deployed": tag, "transport": "directadmin", "gate_confirmed": True}))
 
 

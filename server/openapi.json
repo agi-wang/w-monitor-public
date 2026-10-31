@@ -800,7 +800,32 @@
         "security": [],
         "responses": {
           "200": {
-            "description": "Success; privileged data and status reads are no-store"
+            "description": "Read-only receiver health. email_channel identifies the selected provider; email_channel_configured only confirms a valid local configuration, not successful authentication or email delivery.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "email_channel": {
+                      "type": "string",
+                      "enum": [
+                        "smtp",
+                        "w-mail",
+                        "unavailable"
+                      ]
+                    },
+                    "email_channel_configured": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "email_channel",
+                    "email_channel_configured"
+                  ],
+                  "additionalProperties": true
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid bounded request"
@@ -1842,12 +1867,12 @@
             "description": "Missing resource, disabled/rotated publication or invalid encrypted address"
           }
         },
-        "description": "Redirects to / after verified userinfo and session-ID rotation. Normal login does not grant host control or other users’ monitoring spaces. Existing claimed spaces are recovered by verified issuer/subject identity. The anonymous space is claimed only through an explicit authenticated claim action."
+        "description": "Redirects to / after verified userinfo and session-ID rotation. Normal login does not grant host control or other users\u2019 monitoring spaces. Existing claimed spaces are recovered by verified issuer/subject identity. The anonymous space is claimed only through an explicit authenticated claim action."
       }
     },
     "/api/devices": {
       "get": {
-        "summary": "List the current space’s devices and scalar telemetry",
+        "summary": "List the current space\u2019s devices and scalar telemetry",
         "security": [
           {
             "BrowserSession": [],
@@ -1902,7 +1927,7 @@
     },
     "/api/devices/{id}": {
       "get": {
-        "summary": "Read one owned device’s complete latest snapshot",
+        "summary": "Read one owned device\u2019s complete latest snapshot",
         "security": [
           {
             "BrowserSession": [],
@@ -2172,7 +2197,7 @@
     },
     "/api/email/bind": {
       "post": {
-        "summary": "Bind the normal login’s verified email with explicit notification consent",
+        "summary": "Bind the normal login\u2019s verified email with explicit notification consent",
         "security": [
           {
             "BrowserSession": [],

@@ -903,7 +903,7 @@ def route(db, environ):
     method, path = environ.get("REQUEST_METHOD", "GET"), environ.get("PATH_INFO", "/")
     locale = language(environ.get("HTTP_ACCEPT_LANGUAGE", ""))
     if method == "GET" and path == "/health":
-        return 200, {"status": "ok", "version": VERSION, "release_tag": SOURCE_RELEASE if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", SOURCE_RELEASE) else None, "mode": "public", "host_control_enabled": False, "agent_updates": "manual", "cache": "redis" if CACHE.healthy() else "unavailable", "realtime": "sse" if CONFIG.get("enable_events") is True else "polling"}, []
+        return 200, {"status": "ok", "version": VERSION, "release_tag": SOURCE_RELEASE if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", SOURCE_RELEASE) else None, "mode": "public", "host_control_enabled": False, "agent_updates": "manual", "cache": "redis" if CACHE.healthy() else "unavailable", "email_channel": CONFIG.get("email_provider", "smtp") if CONFIG.get("email_provider", "smtp") in ("smtp", "w-mail") else "unavailable", "email_channel_configured": email_delivery_available(), "realtime": "sse" if CONFIG.get("enable_events") is True else "polling"}, []
     if method == "GET" and path == "/api/regions":
         regions = CONFIG.get("regions", [{"id": CONFIG.get("region_id", "default"), "name": ORIGIN, "origin": ORIGIN}])
         result = []
