@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.4.4**; the release series starts at **v1.0.0**.
+The current release is **v1.4.5**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -805,3 +805,11 @@ verified pip wheel at private `bin/pip.whl` and store its exact `pip_sha256` in 
 private deploy config. Only this transport uses a venv without pip and this
 verified bootstrap wheel to install the existing hash-locked dependencies.
 Configuration, sockets, logs and PID files remain owner-only outside the web root.
+
+### Host pressure: Steal, PSI and I/O
+
+Open **View details → Host pressure** in your private space. The realtime summary adds CPU Steal/I/O Wait; the pressure section shows18 live scalars and10 grouped curves covering CPU/memory/I/O PSI, per-core load/run queue, disk activity and weighted wait, available memory/swap, and1/5/15minute load. Curves share the history range selector and survive browser reload or recovery in another browser. Pressure details stay owner-only; anonymous share columns are unchanged.
+
+Manually update the Lite Agent to v1.4.5 for corrected Steal/I/O Wait and negotiated realtime pressure. No new permission or opt-in flag is needed for read-only collection; remote control and automatic updates remain absent. The first CPU interval, unsupported PSI, missing reports and reset counters show an em dash or curve gap, never a fabricated zero. A zero is a valid measured value. Old Agents and receivers remain compatible; uncorrected legacy Steal/I/O Wait do not populate the new history.
+
+Pressure observations are host-level. Containers may see host counters, Steal alone does not prove overselling, and weighted disk wait (ms/s) is not an individual request's latency. Existing history retention and sampling startup values also govern pressure history, in separate compressed/encrypted Redis keys. Resource/uptime history and SQLite identity data are preserved. Pressure storage can degrade independently while base reporting continues; the report acknowledgement exposes pressure_history_available.

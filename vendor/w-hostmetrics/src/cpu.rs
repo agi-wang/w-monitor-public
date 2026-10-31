@@ -19,7 +19,7 @@ pub struct CpuTotals {
 }
 
 impl CpuTotals {
-    /// Sum of all jiffy counters — the denominator for delta percentages.
+    /// Elapsed jiffies; guest/guest_nice are already included in user/nice.
     pub fn total(&self) -> u64 {
         self.user
             + self.nice
@@ -29,8 +29,6 @@ impl CpuTotals {
             + self.irq
             + self.softirq
             + self.steal
-            + self.guest
-            + self.guest_nice
     }
 }
 
@@ -81,7 +79,10 @@ fn cpu_delta_core(prev: &CpuTotals, next: &CpuTotals) -> Option<CpuDelta> {
     let td = total_delta as f64;
     let idle_delta = next.idle.saturating_sub(prev.idle);
     let iowait_delta = next.iowait.saturating_sub(prev.iowait);
-    let steal_delta = next.steal.saturating_sub(prev.steal);
+    let steal_delta = next.steal.checked_sub(prev.steal)?;
+    if steal_delta > total_delta {
+        return None;
+    }
     let busy_delta = total_delta
         .saturating_sub(idle_delta)
         .saturating_sub(iowait_delta);

@@ -1,4 +1,4 @@
-# Public monitoring contract v1.4.4
+# Public monitoring contract v1.4.5
 
 [OpenAPI](server/openapi.json) describes browser, ingestion and public-status APIs.
 This receiver implements the existing v1.0 full report envelope; it has no Private
@@ -415,3 +415,13 @@ authenticated Redis chunks retain minute/hour tiers; `uptime_retention_days`
 controls the longest tier (1-365 days, default30). Transition logs retain the most
 recent100 entries per monitor (latest20 returned). Removing a device, monitor or
 space removes its stored monitoring history. SQL holds definitions, not telemetry.
+
+## Host pressure telemetry (v1.4.5)
+
+New Agents use corrected CPU elapsed time: user + nice + system + idle + iowait + irq + softirq + steal. guest/guest_nice are already included in user/nice and must not be added again. The vps_pressure collector retains schema_version=2 and adds cpu_accounting_version=2. First samples and counter resets remain null. Steal does not establish overselling, and container observations may describe the host.
+
+The receiver returns pressure_metrics_version=1 after an accepted report. Only then does the Agent include vps_pressure.sample and its schema/accounting versions in compact realtime reports. An older receiver continues receiving the existing four realtime collectors; full read-only snapshots stay compatible. New receivers accept older Agents. Their old-accounting Steal/iowait remain null in new pressure projections/history, without altering the stored full report. Other missing pressure fields remain null. Updates still require a local operator.
+
+Owner device projections add pressure, an allowlisted PressureMetrics object; anonymous shares never receive this object. GET /api/devices/{id}/pressure-history?range=15m|1h|24h|7d|30d|all requires both current-space session and operation token; another space returns404. It uses the same retention/fine-step startup settings as resource history, separate encrypted/compressed Redis keys and independent18-field weighted records. The original resource and availability layouts/keys remain unchanged. All-null slots are retained, and individual metric counts exclude nulls. Whole-space deletion and device revocation also delete pressure history.
+
+Each pressure chunk has at most60slots (6600 raw bytes); decompression is bounded to8192bytes. Queries retain the existing720point limit and shared short cache. Pressure-history storage failure returns pressure_history_available=false without undoing a successful device registration or base telemetry. No pressure samples or history are written to SQLite or fabricated from older snapshots.

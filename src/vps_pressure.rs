@@ -215,6 +215,7 @@ fn build_vps_pressure_report(input: VpsPressureInput) -> Value {
 
     json!({
         "schema_version": 2,
+        "cpu_accounting_version": 2,
         // First-class class for fleet list / filters (physical | vm | container).
         "machine_kind": machine_kind,
         "sample": {
