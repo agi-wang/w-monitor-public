@@ -7,7 +7,7 @@ W Monitor Private and has no remote host-control or Agent auto-update path.
 ## Get started
 
 Primary domain: **[monitor.20290708.xyz](https://monitor.20290708.xyz/)**.
-The current release is **v1.4.0**; the release series starts at **v1.0.0**.
+The current release is **v1.4.1**; the release series starts at **v1.0.0**.
 
 Open a regional site and choose **One-command device setup**:
 
@@ -132,7 +132,7 @@ installed Agent to upgrade itself.
   Owners opt each page into default-egress rates and historical charts separately.
   IP addresses, process details, inventory and complete reports stay private.
 - Bind a verified identity email and opt in to offline/recovery notifications when
-  the receiver has an SMTP transport configured.
+  the receiver has its selected SMTP or W-Mail transport configured.
 - The interface and API messages support English and Simplified Chinese, selected
   from the browser's `Accept-Language` preferences.
 
@@ -263,8 +263,98 @@ These defaults target roughly five-second visibility; they are not a latency SLA
 
 Optional OAuth uses Authorization Code + PKCE with `openid profile email` and the
 callback `https://YOUR_REGION/auth/callback`. Configure the `oidc_*` fields for
-normal login and the `smtp_*` fields for notifications. Only verified emails can
-be bound, and notification delivery requires user opt-in.
+normal login. Only verified emails can be bound, and notification delivery requires
+user opt-in. Mail transport is chosen by the receiver operator as described below.
+
+### Notification mail providers
+
+`email_provider` defaults to `smtp` and keeps the existing `smtp_host`, `smtp_port`,
+`smtp_user`, `smtp_password` and `smtp_from` profile. Set it explicitly to `w-mail`
+to use the fleet's own optional channel. Both profiles remain in the private
+mode-0600 configuration; changing the selection does not erase either credential.
+For W-Mail also set `w_mail_url` to `https://wmail.myfastools.com`,
+`w_mail_project_id` to `w-monitor-public`, `w_mail_mailbox_id` to the registered
+project mailbox, and `w_mail_api_key` to that project's send-only server key.
+W-Mail fixes the sender from its mailbox; `smtp_from` applies only to SMTP.
+A loopback HTTP origin is accepted only for isolated local acceptance.
+
+Each regional receiver owns its private configuration and notification outbox.
+Updating a provider does not bind addresses, enable a tenant's notifications, or
+claim another receiver's spaces. Existing queued SMTP records keep their original
+SMTP path; enabling W-Mail never backfills them or old status transitions. An
+unconfigured selected provider reports delivery unavailable through the existing
+email settings API. Restart the receiver after changing its private configuration.
+
+New W-Mail notifications reuse the existing SQLite outbox. It stores the selected
+project/mailbox/origin and random event key with each new status transition; the
+recipient remains encrypted and the body is rendered only in memory. The worker
+commits its no-resubmit marker before POST. A timeout, interrupted Cron worker,
+missing acknowledgement or lookup404 permits only GET of that original operation.
+Switching back to SMTP still permits those W-Mail lookups through the retained
+profile; it never starts a new W-Mail send. A changed mailbox/origin pauses the
+old operation rather than forwarding its credential elsewhere.
+
+Provider acceptance and recipient-server delivery are separate states. Each
+operation has at most six receipt lookups and a two-day deadline; an unresolved
+operation retains its tombstone and never becomes sendable again. Delivery rows,
+event keys, job/provider IDs, submission and recipient states, and their timestamps
+are retained after completion; stopping polling does not delete history. Older
+SMTP rows already removed by previous releases cannot be reconstructed. Structured
+worker diagnostics and stored metadata contain event/job/provider IDs, state and
+fixed machine codes, never addresses, subjects, message bodies, management links,
+credentials or raw provider responses. Normal consent and daily rate limits still
+apply to new sends. Restore an old SQLite backup only while the receiver and Cron
+worker are stopped. Before restarting, mark restored W-Mail pending operations
+GET-only, because the backup may predate a successful POST:
+
+```sql
+UPDATE notification_outbox
+SET status='unknown',
+    delivery=json_set(delivery,'$.post_started',json('true'),'$.next_at',0)
+WHERE status='pending' AND json_extract(delivery,'$.provider')='w-mail';
+```
+
+### Fleet mail configuration during formal deployment
+
+The eight owned production receivers use a private mail-only overlay during their
+existing tagged deployment. Radar remains the startup-value authority; the
+operator materializes only the five W-Mail profile fields above and temporarily
+sets the JSON object as the repository Actions secret `PUBLIC_W_MAIL_CONFIG`
+through stdin. It is injected only into the regional deployment step. Never place
+this secret in source, a public release zip, attestation, Actions artifact, command
+argument, URL or deployment output. Remove the temporary Actions copy after all
+eight deployments finish; each future formal rollout must supply a fresh,
+Radar-materialized copy. The receiver's existing private runtime copy remains.
+
+The panel driver first uploads reviewed public gate source, verifies its source
+hash and runs an owner-account preflight through the existing DirectAdmin terminal
+or cPanel one-shot Cron interface. The preflight checks the actual private
+directory, owner-only files, matching receiver/deployment origins, and that the
+private directory is outside the document root. Only then does it upload a
+mode-0600 private outer envelope containing the original verified release and the
+mail overlay. The original nine public assets and their provenance/checksums are
+unchanged. Only the eight current fleet origins, fixed project `w-monitor-public`,
+registered fleet mailbox, and the five mail fields are accepted; retired UK2 and
+other targets are refused. Old gates reject the new envelope until upgraded;
+there is no fallback that silently skips the overlay. Non-overlay deployments
+still accept the original archive format.
+
+Inside the existing deployment lock, the gate merges the five fields into that
+account's own `config.json`, preserving its identity/encryption keys, SMTP profile,
+paths, region catalog and notification consent. No old instance secret is read by
+CI or copied to another receiver. The write is atomic and mode0600; a failed
+activation restores the exact original bytes and hosting selection. A temporary
+owner-only `mail-config-rollback.json` remains in that same private directory if
+a deployment process is killed: automatic changes then stop until the operator
+recovers or confirms that transaction, rather than guessing which profile won.
+The successful transaction removes its recovery copy.
+
+`/health` exposes only `email_channel` and `email_channel_configured`. The latter
+means the local profile is structurally valid; it is not proof of provider
+authentication or recipient delivery. Formal fleet activation requires the new
+release and these two fields to match, followed by the separate real notification
+acceptance. No notification subscription is enabled and no additional worker or
+mail probe is started by the overlay itself.
 
 ### Account-owned Redis
 
