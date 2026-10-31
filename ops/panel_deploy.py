@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deliver an attested release through DirectAdmin's authenticated APIs.
+"""Deliver an attested release through an explicitly selected owner channel.
 
 The panel account is supplied by the protected GitHub environment. Only the
 fixed private gate and its version/checksum arguments are invoked; no downloaded
@@ -17,7 +17,9 @@ import select
 import shlex
 import socket
 import ssl
+import stat
 import struct
+import subprocess
 import sys
 import time
 import zipfile
@@ -147,7 +149,7 @@ try:
  info=p.lstat()
  if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode&0o077 or info.st_size>65536:raise RuntimeError("Reviewed gate owner refused")
  if hashlib.sha256(p.read_bytes()).hexdigest()!=sys.argv[2]:raise RuntimeError("Reviewed gate hash refused")
- subprocess.run([sys.executable,str(p)],env=dict(os.environ,SSH_ORIGINAL_COMMAND='mail-preflight '+sys.argv[3]),check=True,timeout=25,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+ subprocess.run([sys.executable,str(p)],env=dict(os.environ,SSH_ORIGINAL_COMMAND='mail-preflight '+sys.argv[3]+' '+sys.argv[2]),check=True,timeout=25,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
  mode=0o600
  if destination.exists():
   info=destination.lstat()
@@ -164,10 +166,67 @@ finally:
     return " ".join(shlex.quote(value) for value in (python, "-c", "exec(" + repr(code) + ")", home + "/" + candidate, source_hash, origin))
 
 
+def ssh_deploy(data, tag, checksum, identity, known_hosts):
+    # Pin the exact protected-environment tuples without publishing account
+    # topology. This is an explicit owner channel, never a panel fallback.
+    region = os.environ["PUBLIC_DEPLOY_REGION"]
+    origin = os.environ["PUBLIC_ORIGIN"].rstrip("/")
+    host, user = os.environ["DEPLOY_HOST"], os.environ["DEPLOY_USER"]
+    port = os.environ.get("DEPLOY_PORT") or "22"
+    target = [region, origin, host, port, user]
+    permitted = {
+        "us": "1021cfb197bb5849af70e97f6cee09b82761c7e3784a0fd995066729602a4cb9",
+        "sg-dap": "d3b28763398350dce99cd5cb71d4db96a4986caaa9744da1a4437aae10857708",
+    }
+    fingerprint = hashlib.sha256(json.dumps(target, separators=(",", ":")).encode()).hexdigest()
+    if fingerprint != permitted.get(region):
+        raise RuntimeError("Unregistered SSH mail target refused")
+    for path in (identity, known_hosts):
+        info = Path(path).lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            raise RuntimeError("Owner-only SSH authentication files required")
+    data, mail_origin = private_delivery(data)
+    if not mail_origin:
+        raise RuntimeError("Private SSH mail profile required")
+    command = ["ssh", "-F", "/dev/null", "-T", "-p", port, "-i", identity,
+               "-o", "KexAlgorithms=diffie-hellman-group14-sha256", "-c", "aes128-ctr",
+               "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none",
+               "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "ConnectTimeout=10",
+               "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+               "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=" + known_hosts,
+               user + "@" + host]
+    environment = {name: value for name, value in os.environ.items()
+                   if name not in {"PUBLIC_W_MAIL_CONFIG", "DEPLOY_KEY", "DEPLOY_KNOWN_HOSTS"}}
+
+    def run(operation, content=b"", timeout=60):
+        # No retries: an uncertain activation must be inspected by the operator.
+        # Remote output can contain private diagnostics; never relay or retain it.
+        subprocess.run(command + [operation], input=content, env=environment, timeout=timeout,
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    # An operator installs the reviewed gate over the registered owner channel.
+    # The existing forced key accepts only preflight and versioned deployment;
+    # it never receives shell commands, paths, code uploads or an owner key.
+    gate = Path(__file__).with_name("deploy_receiver.py").read_bytes()
+    run("mail-preflight " + mail_origin + " " + hashlib.sha256(gate).hexdigest())
+    run("deploy " + tag + " " + checksum, data, timeout=900)
+    print(json.dumps({"deployed": tag, "transport": "ssh", "gate_confirmed": True}))
+
+
 def deploy():
-    archive, tag, checksum = sys.argv[1:]
+    archive, tag, checksum = sys.argv[1:4]
     if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag) or not re.fullmatch(r"[a-f0-9]{64}", checksum):
         raise RuntimeError("Invalid immutable release identity")
+    data = Path(archive).read_bytes()
+    if len(data) > 192 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != checksum:
+        raise RuntimeError("Deployment inventory checksum mismatch")
+    transport = os.environ["DEPLOY_TRANSPORT"]
+    if transport == "ssh":
+        identity, known_hosts = sys.argv[4:]
+        ssh_deploy(data, tag, checksum, identity, known_hosts)
+        return
+    if transport not in ("directadmin", "cpanel") or len(sys.argv) != 4:
+        raise RuntimeError("Unregistered deployment transport refused")
     origin = os.environ["PUBLIC_DEPLOY_PANEL_URL"].rstrip("/")
     parsed = urlsplit(origin)
     user = os.environ["PUBLIC_DEPLOY_USER"]
@@ -177,9 +236,6 @@ def deploy():
         raise RuntimeError("Invalid panel origin")
     if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", user) or not re.fullmatch(r"\.[a-zA-Z][a-zA-Z0-9_-]{0,62}", private) or not re.fullmatch(r"/[A-Za-z0-9/._-]+", python):
         raise RuntimeError("Invalid dedicated deployment paths")
-    data = Path(archive).read_bytes()
-    if len(data) > 192 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != checksum:
-        raise RuntimeError("Deployment inventory checksum mismatch")
     data, mail_origin = private_delivery(data)
     gate = Path(__file__).with_name("deploy_receiver.py").read_bytes() if mail_origin else None
     if os.environ.get("DEPLOY_TRANSPORT") == "cpanel":
