@@ -210,13 +210,15 @@ function drawPages() {
 async function refreshPages() { pages = (await api("/api/pages")).pages; drawPages(); }
 async function refreshEmail() {
   const data = await api("/api/email");
-  $("bound-email").textContent = data.email || t("尚未绑定邮箱");
+  const bound = data.binding === "w-id" || Boolean(data.email);
+  $("bound-email").textContent = data.binding === "w-id" ? t("使用 W-ID 账户通知邮箱") : data.email || t("尚未绑定邮箱");
   $("email-enabled").checked = data.enabled;
-  $("email-enabled").disabled = !data.email;
+  $("email-enabled").disabled = !bound;
   $("bind-email").disabled = !data.can_bind;
-  $("save-email").disabled = !data.email;
-  $("unbind-email").hidden = !data.email;
-  $("email-help").textContent = !data.delivery_available ? t("此部署的通知发送服务尚未就绪。") : data.can_bind ? t("可绑定当前登录账号中已验证的邮箱。") : t("请先正常登录并在账号中验证邮箱，再返回绑定。");
+  $("bind-email").textContent = data.provider === "w-mail" ? t("绑定 W-ID 通知邮箱") : t("绑定已验证邮箱");
+  $("save-email").disabled = !bound;
+  $("unbind-email").hidden = !bound;
+  $("email-help").textContent = !data.delivery_available ? t("此部署的通知发送服务尚未就绪。") : data.provider === "w-mail" ? data.requires_login ? t("请重新正常登录 W-ID 后绑定通知") : data.requires_rebind ? t("邮件渠道已变化，请重新绑定通知") : t("通知邮箱由 W-ID 统一选择，可在账户中心切换。") : data.can_bind ? t("可绑定当前登录账号中已验证的邮箱。") : t("请先正常登录并在账号中验证邮箱，再返回绑定。");
 }
 async function refresh() {
   if (refreshing) { refreshAgain = true; return; }
@@ -675,7 +677,7 @@ for (const prefix of ["install", "quick"]) for (const option of ["realtime", "co
   $(`${prefix}-${option}`).onchange = prefix === "install" ? updateInstallCommand : updateQuickCommand;
 }
 $("new-page").onclick = () => run(() => openPage());
-$("bind-email").onclick = () => run(async () => { await api("/api/email/bind", { enabled: true }); await refreshEmail(); notice(t("已绑定验证过的邮箱，并开启通知。")); });
+$("bind-email").onclick = () => run(async () => { await api("/api/email/bind", { enabled: true }); await refreshEmail(); notice(t("通知接收账户已绑定，并开启通知。")); });
 $("save-email").onclick = () => run(async () => { await api("/api/email/settings", { enabled: $("email-enabled").checked }); await refreshEmail(); notice(t("通知设置已保存。")); });
 $("unbind-email").onclick = () => run(async () => {
   if (!confirm(t("解除邮箱绑定并停止后续通知？"))) return;
