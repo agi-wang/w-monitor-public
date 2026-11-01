@@ -21,12 +21,12 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from redis_cache import RedisCache, MetricHistory
+from redis_cache import RedisCache, MetricHistory, PressureHistory
 from encryption import SealedData, verify_signature
 from metrics import AvailabilityHistory, configuration as probe_configuration, validate_probe, probe_status
 from i18n import EN, language, render_html, translate
 
-VERSION = "1.4.4"
+VERSION = "1.4.5"
 SOURCE_RELEASE = Path(__file__).resolve().parents[1].name
 MAX_BODY = 8 * 1024 * 1024
 WEB = Path(__file__).resolve().parent / "web"
@@ -101,6 +101,8 @@ HISTORY = MetricHistory(CACHE, BOX, DYNAMIC, (
     cadence("history_minute_retention_seconds", 3600, 60, 604800),
     cadence("history_hour_retention_seconds", 2592000, 60, 31536000),
 ), cadence("history_fine_step_seconds", 3, 1, 60))
+PRESSURE_DYNAMIC = NAMESPACE + "pressure-v1"
+PRESSURE_HISTORY = PressureHistory(CACHE, BOX, PRESSURE_DYNAMIC, HISTORY.retention, HISTORY.fine_step)
 UPTIME_DYNAMIC = NAMESPACE + "availability"
 UPTIME_HISTORY = AvailabilityHistory(CACHE, BOX, UPTIME_DYNAMIC, cadence("uptime_retention_days", 30, 1, 365))
 LINK = r"wm1_[A-Za-z0-9_-]{40,320}"
@@ -451,6 +453,22 @@ def scalar(collectors, name):
     return value.get("data", value) if isinstance(value.get("data", value), dict) else {}
 
 
+def pressure_measurements(collectors):
+    collector = scalar(collectors, "vps_pressure")
+    sample = collector.get("sample", {})
+    sample = sample if isinstance(sample, dict) else {}
+    load = sample.get("load_avg", {})
+    load = load if isinstance(load, dict) else {}
+    result = {}
+    for key in PressureHistory.fields:
+        value = load.get({"load_avg_1m": "one", "load_avg_5m": "five", "load_avg_15m": "fifteen"}.get(key)) if key.startswith("load_avg_") else sample.get(key)
+        maximum = 100 if key.endswith("_percent") or "_psi_" in key else 1e12
+        if key in ("cpu_steal_percent", "cpu_iowait_percent") and collector.get("cpu_accounting_version") != 2:
+            value = None
+        result[key] = round(value, 4) if type(value) in (int, float) and 0 <= value <= maximum and math.isfinite(value) else None
+    return result
+
+
 def link_payload(purpose, token):
     try:
         value = BOX.open(purpose, token)
@@ -639,6 +657,7 @@ def projection(row, meta=None, public=False, available=True, page_id=None, show_
     if not public:
         result["id"] = row["id"]
         result["agent_id"] = row["agent_id"]
+        result["pressure"] = meta.get("pressure") if online else None
     else:
         result.pop("data_status", None)
         for key, visible in (("cpu_percent", show_cpu), ("memory_percent", show_memory), ("disk_percent", show_disk)):
@@ -829,7 +848,7 @@ def receive(db, environ):
         raise Rejected(400, "无效设备标识")
     if report.get("version") != "1.0" or not isinstance(report.get("collectors"), dict) or ("compact" in report and not isinstance(report["compact"], dict)):
         raise Rejected(400, "需要 v1.0 完整采集快照")
-    if metrics and not set(report["collectors"]) <= {"cpu", "memory", "disk", "network"}:
+    if metrics and not set(report["collectors"]) <= {"cpu", "memory", "disk", "network", "vps_pressure"}:
         raise Rejected(400, "无效 JSON")
     # Registration serializes durable ownership/token writes. Steady-state
     # telemetry never takes the SQLite writer lock or rewrites the device row.
@@ -847,6 +866,7 @@ def receive(db, environ):
     # adding an Agent update/control mechanism.
     interval = max(5000, min(300000, INTERVAL + int(digest(agent)[:8], 16) % max(1, INTERVAL // 5) - INTERVAL // 10))
     reply = {"status": "ok", "agent_id": agent, "commands": [], "report_role": "primary", "report_interval_ms": interval, "metrics_interval_ms": METRICS_INTERVAL, "scope": "telemetry"}
+    reply["pressure_metrics_version"] = 1
     existing = machine or db.execute("SELECT * FROM devices WHERE space_id=? AND agent_id=?", (space_id, agent)).fetchone()
     bound = db.execute("SELECT public_key FROM device_keys WHERE device_id=?", (existing["id"],)).fetchone() if existing else None
     signed_key = device_proof(environ, bound[0] if bound else None)
@@ -886,6 +906,7 @@ def receive(db, environ):
             collectors["network"] = network
     metadata = {"name": name, "received_at": int(time.time()), "expected_interval_ms": METRICS_INTERVAL if supports_metrics else interval, "cpu": percent(cpu.get("usage_percent", cpu.get("usage"))), "memory": percent(memory.get("usage_percent")), "disk": percent(disk.get("usage_percent")), "network_accounting_version": 2, "network_accounting_scope": network["accounting_scope"], "network_rx_bps": network_rate(network.get("total_received_bytes_per_sec")), "network_tx_bps": network_rate(network.get("total_transmitted_bytes_per_sec"))}
     metadata["service_probes_enabled"] = bool(signed_key) and isinstance(capabilities, dict) and capabilities.get("telemetry.service_probes") is True
+    metadata["pressure"] = pressure_measurements(collectors)
     probe_config = probe_configuration(db, BOX, device_id) if metadata["service_probes_enabled"] else None
     probe_report = report.get("service_probes")
     if metadata["service_probes_enabled"] and signed_key:
@@ -915,6 +936,10 @@ def receive(db, environ):
         if not existing:
             CACHE.remove_reports(DYNAMIC, [device_id], space_id)
         raise
+    # Independent optional history cannot invalidate a committed registration or
+    # cause an old Agent's successfully stored telemetry to be replayed.
+    pressure = {"received_at": metadata["received_at"], **metadata["pressure"]}
+    reply["pressure_history_available"] = CACHE.store_report(PRESSURE_DYNAMIC, device_id, space_id, "", BOX.seal("pressure:" + device_id, pressure), secrets.token_hex(16), PRESSURE_HISTORY, pressure) == 1
     if machine_token:
         reply["agent_token"] = machine_token
     desired = machine["settings"] if machine else db.execute("SELECT settings FROM device_settings WHERE device_id=?", (device_id,)).fetchone()
@@ -1003,9 +1028,9 @@ def history_query(environ, public=False):
     return selection, query.get("ref", [""])[0]
 
 
-def history_snapshot(device, selection):
+def history_snapshot(device, selection, history=HISTORY):
     try:
-        return HISTORY.read(device, selection)
+        return history.read(device, selection)
     except (ConnectionError, ValueError):
         raise Rejected(503, "历史数据暂时不可用，请稍后重试") from None
 
@@ -1093,14 +1118,14 @@ def route(db, environ):
         space = current_space(db, session)
         operation_guard(environ, space)
         return 200, snapshot(db, space, number=page_number(environ)), headers
-    if method == "GET" and re.fullmatch(r"/api/devices/[a-f0-9]{32}/history", path):
+    if method == "GET" and re.fullmatch(r"/api/devices/[a-f0-9]{32}/(?:history|pressure-history)", path):
         space = current_space(db, session)
         operation_guard(environ, space)
         selection, _ = history_query(environ)
         device = path.split("/")[3]
         if not db.execute("SELECT id FROM devices WHERE id=? AND space_id=?", (device, space["id"])).fetchone():
             raise Rejected(404, "设备不存在")
-        return 200, history_snapshot(device, selection), headers
+        return 200, history_snapshot(device, selection, PRESSURE_HISTORY if path.endswith("/pressure-history") else HISTORY), headers
     if method == "GET" and path == "/api/device-options":
         space = current_space(db, session)
         operation_guard(environ, space)
@@ -1347,6 +1372,7 @@ def route(db, environ):
         db.execute("DELETE FROM spaces WHERE id=?", (space["id"],))
         db.commit()
         CACHE.remove_reports(DYNAMIC, device_ids, space["id"], forget_space=True)
+        CACHE.remove_reports(PRESSURE_DYNAMIC, device_ids, space["id"], forget_space=True)
         forget_availability(availability_ids, space["id"], forget_space=True)
         return 200, {"ok": True}, headers
     if path in ("/api/spaces/claim", "/api/recovery/rotate"):
@@ -1386,6 +1412,7 @@ def route(db, environ):
         db.commit()
         if row:
             CACHE.remove_reports(DYNAMIC, [row["id"]], space["id"])
+            CACHE.remove_reports(PRESSURE_DYNAMIC, [row["id"]], space["id"])
             forget_availability(availability_ids, space["id"])
         return 200, {"ok": True}, headers
     if path.startswith("/api/pages/"):

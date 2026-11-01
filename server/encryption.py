@@ -76,8 +76,8 @@ class SealedData:
             decoder = zlib.decompressobj()
             version = "wmh2_" if token.startswith("wmh2_") else "wmh1_"
             context = purpose + ":network-accounting-v2" if version == "wmh2_" else purpose
-            raw = decoder.decompress(self._open(version, context, token), 4097)
-            if len(raw) > 4096 or not decoder.eof or decoder.unused_data:
+            raw = decoder.decompress(self._open(version, context, token), 8193)
+            if len(raw) > 8192 or not decoder.eof or decoder.unused_data:
                 raise ValueError()
             return raw
         except (ValueError, zlib.error):

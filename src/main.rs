@@ -1000,6 +1000,7 @@ async fn main() -> Result<()> {
     let mut latest = HashMap::new();
     let mut heavy_keys = Vec::<String>::new();
     let mut metrics_ms = None;
+    let mut pressure_metrics = false;
     let mut full_due = Instant::now();
     info!(
         "Lite started: full permitted read-only collection; no remote control or automatic updates"
@@ -1065,9 +1066,12 @@ async fn main() -> Result<()> {
         } else {
             latest
                 .iter()
-                .filter(|(key, _)| matches!(key.as_str(), "cpu" | "memory" | "disk" | "network"))
+                .filter(|(key, _)| matches!(key.as_str(), "cpu" | "memory" | "disk" | "network") || (pressure_metrics && key.as_str() == "vps_pressure"))
                 .map(|(key, value)| {
                     let data = value.get("data").unwrap_or(value);
+                    if key == "vps_pressure" {
+                        return (key.clone(), json!({"schema_version": 2, "cpu_accounting_version": data["cpu_accounting_version"], "sample": data["sample"]}));
+                    }
                     let fields: &[&str] = if key == "network" {
                         &[
                             "accounting_version",
@@ -1168,6 +1172,7 @@ async fn main() -> Result<()> {
         let mut config_changed = false;
         if let Some(value) = response {
             if value["status"] == "ok" {
+                pressure_metrics = value["pressure_metrics_version"].as_u64() == Some(1);
                 if let Some(next) = value["agent_token"].as_str().filter(|v| {
                     v.starts_with("sat_")
                         && v.len() == 36

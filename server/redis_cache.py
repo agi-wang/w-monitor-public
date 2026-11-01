@@ -210,7 +210,7 @@ class MetricHistory:
     All levels consume original samples, never unweighted means of means.
     """
     include_counts = False
-    record = struct.Struct(">H5f5H")
+    include_empty = False
     fields = ("cpu_percent", "memory_percent", "disk_percent", "network_rx_bps", "network_tx_bps")
     sources = ("cpu", "memory", "disk", "network_rx_bps", "network_tx_bps")
     spans = (60, 3600, 86400)
@@ -220,6 +220,8 @@ class MetricHistory:
 
     def __init__(self, cache, box, namespace, retention, fine_step=3):
         self.cache, self.box, self.namespace = cache, box, namespace
+        self.width = len(self.fields)
+        self.record = struct.Struct(">H" + str(self.width) + "f" + str(self.width) + "H")
         self.retention, self.fine_step = tuple(retention), fine_step
         if not (60 <= retention[0] <= 86400 and retention[0] <= retention[1] <= 604800 and retention[1] <= retention[2] <= 31536000):
             raise ValueError("Invalid history retention")
@@ -238,10 +240,10 @@ class MetricHistory:
             raise ValueError("Invalid history record size")
         result = {}
         for record in self.record.iter_unpack(raw):
-            slot, means, counts = record[0], list(record[1:6]), list(record[6:])
+            slot, means, counts = record[0], list(record[1:1 + self.width]), list(record[1 + self.width:])
             if slot in result or slot >= 60 or any(not math.isfinite(mean) or mean < 0 for mean in means):
                 raise ValueError("Invalid history record")
-            if encoded.startswith("wmh1_"):
+            if encoded.startswith("wmh1_") and self.fields == MetricHistory.fields:
                 means[3:] = [0.0, 0.0]
                 counts[3:] = [0, 0]
             result[slot] = [means, counts]
@@ -261,7 +263,7 @@ class MetricHistory:
         for key, old, span, step, retention in zip(keys, previous, self.spans, self.steps, self.retention):
             records = self.decode(key, old)
             slot = (now % span) // step
-            means, counts = records.setdefault(slot, [[0.0] * 5, [0] * 5])
+            means, counts = records.setdefault(slot, [[0.0] * self.width, [0] * self.width])
             for index, source in enumerate(self.sources):
                 value = metadata.get(source)
                 if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and 0 <= value <= 1e30:
@@ -311,11 +313,11 @@ class MetricHistory:
                 if not start <= timestamp <= now:
                     continue
                 bucket = timestamp // step * step
-                sums, totals = buckets.setdefault(bucket, [[0.0] * 5, [0] * 5])
-                for index in range(5):
+                sums, totals = buckets.setdefault(bucket, [[0.0] * self.width, [0] * self.width])
+                for index in range(self.width):
                     sums[index] += means[index] * counts[index]
                     totals[index] += counts[index]
-        points = [[timestamp, *(round(sums[i] / counts[i], 6) if counts[i] else None for i in range(5))] for timestamp, (sums, counts) in sorted(buckets.items()) if any(counts)]
+        points = [[timestamp, *(round(sums[i] / counts[i], 6) if counts[i] else None for i in range(self.width))] for timestamp, (sums, counts) in sorted(buckets.items()) if any(counts) or self.include_empty]
         if len(points) > 720:
             raise ValueError("History response exceeds bound")
         result = {"columns": ["time", *self.fields], "points": points, "from": start, "to": now, "resolution_seconds": step, "retention_seconds": self.retention[tier], "max_retention_seconds": self.retention[2], "refresh_ms": 3000 if tier == 0 else 5000 if tier == 1 else 30000, "storage": "redis", "aggregation": "sample_weighted_mean", "network_accounting_scope": "default_route_interfaces"}
@@ -327,3 +329,17 @@ class MetricHistory:
         script = "if (redis.call('HGET',KEYS[1],'__revision') or '0')~=ARGV[1] then return 0 end; redis.call('SETEX',KEYS[2],ARGV[2],ARGV[3]); return 1"
         self.cache.command("EVAL", script, 2, prefix + "index", view_key, state[0], 2 if tier == 0 else 5 if tier == 1 else 30, encoded)
         return result
+
+
+class PressureHistory(MetricHistory):
+    # Separate keys preserve every existing five-field resource/uptime chunk.
+    fields = sources = ("cpu_steal_percent", "cpu_iowait_percent", "cpu_psi_some_avg10", "cpu_psi_full_avg10", "memory_psi_some_avg10", "memory_psi_full_avg10", "io_psi_some_avg10", "io_psi_full_avg10", "load_per_core_1m", "run_queue_per_core", "disk_busy_percent", "disk_weighted_io_ms_per_sec", "disk_max_io_in_progress", "memory_available_percent", "swap_usage_percent", "load_avg_1m", "load_avg_5m", "load_avg_15m")
+    include_empty = True
+
+    def __init__(self, cache, box, namespace, retention, fine_step=3):
+        super().__init__(cache, box, namespace, retention, fine_step)
+        self.policy = "pressure-v1:" + self.policy
+
+    def read(self, device, selection, now=None):
+        value = super().read(device, selection, now)
+        return {**value, "network_accounting_scope": None, "scope": "host_observation"}

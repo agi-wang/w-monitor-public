@@ -381,6 +381,30 @@ async function openPage(page = null) {
 }
 const reportTitles = new Map(Object.entries({ system: "系统信息", cpu: "CPU 与负载", memory: "内存与交换", disk: "磁盘与挂载", disk_io: "磁盘 I/O", process: "进程", network: "网络接口", connections: "网络连接", traffic_flows: "流量明细", sensor: "温度与传感器", mount_health: "挂载健康", gpu: "GPU", docker: "容器", security_posture: "安全检查", login_accounts: "登录与账号", diting_audit: "审计摘要", web_hosts: "网站与证书", project_status: "服务与项目", software_inventory: "软件清单", security_advisories: "安全公告", ping: "延迟探测", traceroute: "网络路径", easytier: "EasyTier", cache_scan: "缓存扫描", vps_pressure: "主机负载", transport_runtime: "上报链路", runtime_access: "采集权限" }));
 const reportLabels = new Map(Object.entries({ accounting_scope: "流量统计口径", accounting_version: "统计口径版本", default_route_interfaces: "默认出口接口", traffic_groups: "接口分类观测", traffic_class: "接口分类", egress: "默认出口", lan: "其他局域接口", loopback: "回环", container: "容器与网桥", tunnel: "隧道", unknown: "未分类", received_bytes_per_sec: "下行速率", transmitted_bytes_per_sec: "上行速率", received_bytes: "累计接收", transmitted_bytes: "累计发送", interface_count: "接口数量", hostname: "主机名称", os_name: "操作系统", os_version: "系统版本", kernel_version: "内核版本", architecture: "架构", uptime_seconds: "运行时长", uptime_secs: "运行时长", cpu_count: "CPU 核心", total_memory_bytes: "物理内存", usage_percent: "使用率", total_bytes: "总容量", used_bytes: "已用容量", available_bytes: "可用容量", swap_total_bytes: "交换区容量", swap_used_bytes: "已用交换区", swap_usage_percent: "交换区使用率", cores: "核心数", per_core: "每核心指标", core: "核心", brand: "型号", frequency_mhz: "频率", load_avg: "平均负载", one: "1 分钟", five: "5 分钟", fifteen: "15 分钟", disks: "磁盘列表", mount_point: "挂载点", file_system: "文件系统", processes: "进程列表", pid: "PID", name: "名称", cpu_usage: "CPU 使用率", memory_bytes: "内存占用", containers: "容器列表", status: "状态", available: "可用", reason: "原因", count: "数量", interfaces: "接口列表", address: "地址", local_addr: "本地地址", remote_addr: "远端地址", port: "端口", findings: "检查结果", severity: "级别", message: "详情", data: "数据", capabilities: "能力", agent_version: "Agent 版本", report_seq: "上报序号", expected_interval_ms: "上报间隔", timestamp: "采集时间", version: "协议版本", agent_id: "设备标识", os: "系统", arch: "架构", report_interval_ms: "完整上报间隔" }));
+const pressureMetrics = [
+  ["cpu_steal_percent", "CPU Steal", "%"], ["cpu_iowait_percent", "I/O Wait", "%"],
+  ["cpu_psi_some_avg10", "CPU PSI some", "%"], ["cpu_psi_full_avg10", "CPU PSI full", "%"],
+  ["memory_psi_some_avg10", "内存 PSI some", "%"], ["memory_psi_full_avg10", "内存 PSI full", "%"],
+  ["io_psi_some_avg10", "I/O PSI some", "%"], ["io_psi_full_avg10", "I/O PSI full", "%"],
+  ["load_per_core_1m", "每核负载（1 分钟）", "×"], ["run_queue_per_core", "每核运行队列", "×"],
+  ["disk_busy_percent", "磁盘忙碌", "%"], ["disk_weighted_io_ms_per_sec", "磁盘加权 I/O 时间", "ms/s"],
+  ["disk_max_io_in_progress", "磁盘在途 I/O", "项"], ["memory_available_percent", "可用内存", "%"],
+  ["swap_usage_percent", "交换区使用率", "%"], ["load_avg_1m", "负载（1 分钟）", ""],
+  ["load_avg_5m", "负载（5 分钟）", ""], ["load_avg_15m", "负载（15 分钟）", ""],
+];
+for (const [key, label] of pressureMetrics) reportLabels.set(key, label);
+const pressureGroups = [["CPU Steal / I/O Wait", [0, 1]], ["CPU PSI（10 秒均值）", [2, 3]], ["内存 PSI（10 秒均值）", [4, 5]], ["I/O PSI（10 秒均值）", [6, 7]], ["每核负载与运行队列", [8, 9]], ["磁盘忙碌", [10]], ["磁盘加权 I/O 时间", [11]], ["磁盘在途 I/O", [12]], ["可用内存与交换区", [13, 14]], ["平均负载", [15, 16, 17]]];
+function pressureValue(value, unit) {
+  return typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(value) + (unit ? " " + t(unit) : "") : "—";
+}
+function parseHistory(data, expected) {
+  if (JSON.stringify(data.columns) !== JSON.stringify(expected) || !Array.isArray(data.points) || data.points.length > 720 || !Number.isFinite(data.from) || !Number.isFinite(data.to) || data.to <= data.from || !Number.isInteger(data.resolution_seconds) || data.resolution_seconds < 1) throw new Error(t("历史数据格式无效"));
+  const points = data.points.map(row => {
+    if (!Array.isArray(row) || row.length !== expected.length || !Number.isFinite(row[0]) || row.slice(1).some(value => value !== null && (typeof value !== "number" || !Number.isFinite(value) || value < 0))) throw new Error(t("历史数据格式无效"));
+    return Object.fromEntries(expected.map((field, index) => [field, row[index]]));
+  });
+  return { ...data, points };
+}
 let fullReport, reportDevice, reportCollector = "";
 async function loadHistory(force = false) {
   if (!reportDevice || historyLoading || (publicSlug && !publicVisibility.history)) return;
@@ -392,15 +416,16 @@ async function loadHistory(force = false) {
   historyLoading = true;
   try {
     const path = publicSlug ? `/api/public/status/${publicSlug}/history?ref=${encodeURIComponent(selected.history_ref)}&range=${range}` : `/api/devices/${selected.id}/history?range=${range}`;
-    const data = await api(path);
+    const [data, pressure] = await Promise.all([api(path), publicSlug ? Promise.resolve(null) : api(`/api/devices/${selected.id}/pressure-history?range=${range}`).catch(error => ({ error: error.message }))]);
     if (request !== historyRequest || generation !== ownerGeneration || reportDevice?.viewKey !== selected.viewKey || $("report-range").value !== range) return;
     const expected = ["time", ...["cpu_percent", "memory_percent", "disk_percent", "network_rx_bps", "network_tx_bps"].filter(key => !publicSlug || publicVisibility[key.startsWith("network_") ? "network" : key.replace("_percent", "")])];
-    if (JSON.stringify(data.columns) !== JSON.stringify(expected) || !Array.isArray(data.points) || data.points.length > 720 || !Number.isFinite(data.from) || !Number.isFinite(data.to) || data.to <= data.from || !Number.isInteger(data.resolution_seconds) || data.resolution_seconds < 1) throw new Error(t("历史数据格式无效"));
-    const points = data.points.map(row => {
-      if (!Array.isArray(row) || row.length !== expected.length || !Number.isFinite(row[0]) || row.slice(1).some(value => value !== null && (typeof value !== "number" || !Number.isFinite(value) || value < 0))) throw new Error(t("历史数据格式无效"));
-      return Object.fromEntries(expected.map((field, index) => [field, row[index]]));
-    });
-    historyViews.delete(key); historyViews.set(key, { ...data, points });
+    const parsed = parseHistory(data, expected);
+    let pressureHistory, pressureError = pressure?.error;
+    if (pressure && !pressureError) {
+      try { pressureHistory = parseHistory(pressure, ["time", ...pressureMetrics.map(([key]) => key)]); }
+      catch (error) { pressureError = error.message; }
+    }
+    historyViews.delete(key); historyViews.set(key, { ...parsed, pressureHistory, pressureError });
     while (historyViews.size > 16) historyViews.delete(historyViews.keys().next().value);
     historyLoadedAt = Date.now(); historyLastSeen = selected.last_seen; drawHistory();
   } catch (error) {
@@ -420,24 +445,64 @@ function drawHistory() {
     if (keys.length > 1) { const legend = node("span", undefined, "chart-legend"); labels.forEach((label, index) => legend.append(node("span", label, `chart-series-${index}`))); heading.append(legend); }
     card.append(heading, metricPlot(points, keys, labels, false, history)); charts.append(card);
   }
+  drawPressureHistory(history?.pressureHistory, history?.pressureError);
   if (!history) { $("report-trend-note").textContent = t("正在读取服务端历史…"); return; }
   const step = history.resolution_seconds, resolution = step < 60 ? t("{count} 秒均值", { count: step }) : step < 3600 ? t("{count} 分钟均值", { count: step / 60 }) : t("{count} 小时均值", { count: step / 3600 });
   $("report-trend-note").textContent = (points.length ? t("服务端历史 · {resolution} · {count} 个采样点", { resolution, count: points.length }) : t("该时段暂无历史采样")) + " · " + t("Redis 最长保留 {days} 天；刷新页面或换浏览器可继续查看，缺失采样留空。", { days: new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(history.max_retention_seconds / 86400) });
 }
-function metricPlot(points, keys, labels, small = false, history) {
+function drawPressureHistory(history, error) {
+  const charts = $("pressure-charts");
+  // Keep the inspected sample and keyboard focus stable during live refresh.
+  if (!publicSlug && (charts.matches(":hover") || charts.contains(document.activeElement))) return;
+  charts.replaceChildren();
+  if (publicSlug) return;
+  const points = history?.points ?? [];
+  for (const [title, indices] of pressureGroups) {
+    const metrics = indices.map(index => pressureMetrics[index]), card = node("section", undefined, "metric-chart"), heading = node("div", undefined, "chart-heading");
+    heading.append(node("h3", t(title)));
+    const legend = node("span", undefined, "chart-legend");
+    metrics.forEach(([, label], index) => legend.append(node("span", t(label), `chart-series-${index}`))); heading.append(legend);
+    card.append(heading);
+    if (!points.some(point => metrics.some(([key]) => point[key] !== null))) {
+      card.append(node("p", t("该指标暂无有效采样"), "subtle")); charts.append(card); continue;
+    }
+    const plot = metricPlot(points, metrics.map(([key]) => key), metrics.map(([, label]) => t(label)), false, history, metrics[0][2]), readout = node("p", undefined, "subtle pressure-readout");
+    readout.id = `pressure-readout-${indices[0]}`; plot.setAttribute("tabindex", "0"); plot.setAttribute("aria-describedby", readout.id);
+    let selected = points.length - 1;
+    const inspect = index => {
+      selected = index; const point = points[index];
+      readout.textContent = new Date(point.time * 1000).toLocaleString(locale, { hour12: false }) + " · " + metrics.map(([key, label, unit]) => `${t(label)}: ${pressureValue(point[key], unit)}`).join(" · ");
+    };
+    plot.onpointermove = event => {
+      const rect = plot.getBoundingClientRect(), width = plot.viewBox.baseVal.width;
+      const fraction = Math.max(0, Math.min(1, ((event.clientX - rect.left) / rect.width * width - 64) / (width - 72)));
+      const timestamp = history.from + (history.to - history.from) * fraction;
+      inspect(points.reduce((best, point, index) => Math.abs(point.time - timestamp) < Math.abs(points[best].time - timestamp) ? index : best, 0));
+    };
+    plot.onpointerleave = () => inspect(points.length - 1);
+    plot.onkeydown = event => {
+      if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+      event.preventDefault(); inspect(Math.max(0, Math.min(points.length - 1, selected + (event.key === "ArrowLeft" ? -1 : 1))));
+    };
+    inspect(selected); card.append(plot, readout); charts.append(card);
+  }
+  $("pressure-history-note").textContent = error ?? (history ? t("服务端压力历史 · {count} 个采样点 · {seconds} 秒均值", { count: points.length, seconds: history.resolution_seconds }) : t("等待压力历史采样"));
+}
+function metricPlot(points, keys, labels, small = false, history, unit) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   const width = small ? 120 : window.innerWidth <= 760 ? Math.max(200, window.innerWidth - 108) : 460, height = small ? 28 : 172, left = small ? 1 : 64, right = width - 8, top = 10, bottom = height - (small ? 2 : 30);
   const element = (name, attributes, text) => { const item = document.createElementNS(svg.namespaceURI, name); for (const [key, value] of Object.entries(attributes)) item.setAttribute(key, String(value)); if (text !== undefined) item.textContent = text; svg.append(item); return item; };
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`); svg.setAttribute("class", small ? "metric-spark" : "metric-plot"); svg.setAttribute("role", "img");
   svg.setAttribute("aria-label", labels.join(" / ") + " · " + t("历史趋势")); element("title", {}, labels.join(" / ") + " · " + t("历史趋势"));
   const end = history?.to ?? Date.now() / 1000, start = history?.from ?? end - 900;
-  let maximum = keys[0].endsWith("percent") ? 100 : 1;
-  if (!keys[0].endsWith("percent")) for (const point of points) for (const key of keys) if (point[key] !== null) maximum = Math.max(maximum, point[key] * 1.15);
+  const isPercent = unit === "%" || (unit === undefined && keys[0].endsWith("percent"));
+  let maximum = isPercent ? 100 : 1;
+  if (!isPercent || unit === "%") { maximum = 1; for (const point of points) for (const key of keys) if (point[key] !== null) maximum = Math.max(maximum, point[key] * 1.15); if (isPercent) maximum = Math.min(100, Math.ceil(maximum)); }
   const x = time => left + (time - start) / (end - start) * (right - left), y = value => bottom - Math.min(maximum, value) / maximum * (bottom - top);
   if (!small) {
     for (const fraction of [0, 0.5, 1]) {
       const level = y(maximum * fraction); element("line", { x1: left, x2: right, y1: level, y2: level, class: "chart-grid" });
-      element("text", { x: left - 8, y: level + 3, "text-anchor": "end", class: "chart-axis" }, keys[0].endsWith("percent") ? `${maximum * fraction}%` : keys[0] === "latency_ms" ? `${(maximum * fraction).toFixed(0)} ms` : networkRate(maximum * fraction));
+      element("text", { x: left - 8, y: level + 3, "text-anchor": "end", class: "chart-axis" }, unit !== undefined ? pressureValue(maximum * fraction, unit) : keys[0].endsWith("percent") ? `${maximum * fraction}%` : keys[0] === "latency_ms" ? `${(maximum * fraction).toFixed(0)} ms` : networkRate(maximum * fraction));
     }
     const clock = time => new Date(time * 1000).toLocaleString(locale, { ...(end - start > 86400 ? { month: "2-digit", day: "2-digit" } : {}), hour12: false, hour: "2-digit", minute: "2-digit", ...((history?.resolution_seconds ?? 3) < 60 ? { second: "2-digit" } : {}) });
     element("text", { x: left, y: height - 6, class: "chart-axis" }, clock(start)); element("text", { x: right, y: height - 6, "text-anchor": "end", class: "chart-axis" }, clock(end));
@@ -493,6 +558,17 @@ function updateReportLiveMetrics(device) {
   for (const [label, key] of [["CPU", "cpu_percent"], [t("内存"), "memory_percent"], [t("磁盘"), "disk_percent"]]) {
     if (publicSlug && !publicVisibility[key.replace("_percent", "")]) continue;
     const item = node("div"), value = device?.[key]; item.append(node("span", label), node("strong", online && typeof value === "number" ? `${value.toFixed(1)}%` : "—")); box.append(item);
+  }
+  $("pressure-panel").hidden = Boolean(publicSlug);
+  const pressureBox = $("pressure-live"); pressureBox.replaceChildren();
+  if (!publicSlug) {
+    for (const [key, label, unit] of pressureMetrics) {
+      const item = node("div"); item.append(node("span", t(label)), node("strong", pressureValue(online ? device?.pressure?.[key] : null, unit))); pressureBox.append(item);
+    }
+    for (const key of ["cpu_steal_percent", "cpu_iowait_percent"]) {
+      const [, label, unit] = pressureMetrics.find(([field]) => field === key), item = node("div");
+      item.append(node("span", t(label)), node("strong", pressureValue(online ? device?.pressure?.[key] : null, unit))); box.append(item);
+    }
   }
   $("report-network-note").hidden = Boolean(publicSlug && !publicVisibility.network);
   if (!publicSlug || publicVisibility.network) {
@@ -622,7 +698,7 @@ async function showAgentSettings(device) {
   settingsPoll = setInterval(() => void readAgentSettings().catch(error => { $("device-settings-status").textContent = error.message; }), 3000);
 }
 for (const element of document.querySelectorAll("[data-close]")) element.addEventListener("click", () => $(element.dataset.close).close());
-$("report-dialog").addEventListener("close", () => { historyRequest += 1; historyLoading = false; reportDevice = undefined; fullReport = undefined; $("report-content").textContent = ""; $("report-sections").replaceChildren(); $("report-catalog").replaceChildren(); $("report-charts").replaceChildren(); });
+$("report-dialog").addEventListener("close", () => { historyRequest += 1; historyLoading = false; reportDevice = undefined; fullReport = undefined; $("report-content").textContent = ""; $("report-sections").replaceChildren(); $("report-catalog").replaceChildren(); $("report-charts").replaceChildren(); $("pressure-live").replaceChildren(); $("pressure-charts").replaceChildren(); $("pressure-history-note").textContent = ""; });
 $("report-range").onchange = () => { historyRequest += 1; historyLoading = false; historyLoadedAt = 0; drawHistory(); void loadHistory(true); };
 window.addEventListener("resize", () => { if (reportDevice) updateReportLiveMetrics(reportDevice); });
 $("report-refresh").onclick = () => { if (reportDevice && !publicSlug) void showReport(reportDevice); };
